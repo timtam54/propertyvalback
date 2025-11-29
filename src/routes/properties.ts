@@ -5,7 +5,8 @@ import { extractUserEmail } from '../middleware/auth';
 import { Property, PropertyCreate } from '../models/types';
 import OpenAI from 'openai';
 import multer from 'multer';
-import pdf from 'pdf-parse';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const pdf = require('pdf-parse');
 
 const router = Router();
 

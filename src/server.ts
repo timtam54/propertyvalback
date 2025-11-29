@@ -22,11 +22,33 @@ const PORT = process.env.PORT || 8000;
 // Parse CORS origins from environment
 const corsOrigins = process.env.CORS_ORIGINS?.split(',') || ['http://localhost:3000'];
 
-// Middleware
-app.use(cors({
-  origin: corsOrigins,
+// CORS configuration - allow Vercel preview deployments
+const corsOptions = {
+  origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    // Allow any vercel.app domain (for preview deployments)
+    if (origin.endsWith('.vercel.app')) {
+      return callback(null, true);
+    }
+
+    // Allow configured origins
+    if (corsOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    // Log blocked origins for debugging
+    console.log(`CORS blocked origin: ${origin}`);
+    callback(null, false);
+  },
   credentials: true
-}));
+};
+
+// Middleware
+app.use(cors(corsOptions));
 
 // Raw body for Stripe webhooks (must be before express.json())
 app.use('/api/payments/webhook/stripe', express.raw({ type: 'application/json' }));
