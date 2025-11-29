@@ -10,10 +10,17 @@ const pdf = require('pdf-parse');
 
 const router = Router();
 
-// Initialize OpenAI
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+// Lazy-initialize OpenAI to avoid startup errors if API key is missing
+let openai: OpenAI | null = null;
+function getOpenAI(): OpenAI {
+  if (!openai) {
+    if (!process.env.OPENAI_API_KEY) {
+      throw new Error('OPENAI_API_KEY environment variable is not set');
+    }
+    openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  }
+  return openai;
+}
 
 // Configure multer for file uploads
 const upload = multer({
@@ -305,7 +312,7 @@ router.post('/:propertyId/generate-pitch', async (req: Request, res: Response) =
       ${property.rp_data_report ? 'Market Data: ' + property.rp_data_report.substring(0, 500) : ''}
     `;
 
-    const completion = await openai.chat.completions.create({
+    const completion = await getOpenAI().chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
         {
@@ -401,7 +408,7 @@ router.post('/:propertyId/generate-facebook-ad', async (req: Request, res: Respo
       Features: ${property.features || 'Modern property'}
     `;
 
-    const completion = await openai.chat.completions.create({
+    const completion = await getOpenAI().chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
         {
@@ -466,7 +473,7 @@ router.post('/:propertyId/generate-facebook-post', async (req: Request, res: Res
       Agent: ${property.agent1_name || 'Your Local Agent'}
     `;
 
-    const completion = await openai.chat.completions.create({
+    const completion = await getOpenAI().chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
         {
@@ -670,7 +677,7 @@ router.post('/:propertyId/evaluate', async (req: Request, res: Response) => {
     let improvementsDetected = '';
     if (property.images && property.images.length > 0) {
       try {
-        const imageAnalysis = await openai.chat.completions.create({
+        const imageAnalysis = await getOpenAI().chat.completions.create({
           model: 'gpt-4o-mini',
           messages: [
             {
@@ -702,7 +709,7 @@ Be specific and estimate value impact where possible.`
     }
 
     // Generate comprehensive evaluation report
-    const completion = await openai.chat.completions.create({
+    const completion = await getOpenAI().chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
         {
@@ -892,7 +899,7 @@ router.post('/:propertyId/generate-evaluation-ad', async (req: Request, res: Res
       return;
     }
 
-    const completion = await openai.chat.completions.create({
+    const completion = await getOpenAI().chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
         {
