@@ -11,6 +11,7 @@ import paymentRoutes from './routes/payments';
 import settingsRoutes from './routes/settings';
 import evaluationRoutes from './routes/evaluation';
 import propertyDataRoutes from './routes/propertyData';
+import portfolioRoutes from './routes/portfolio';
 
 // Load environment variables
 dotenv.config();
@@ -49,6 +50,7 @@ app.use('/api/settings', settingsRoutes);
 app.use('/api/evaluate-quick', evaluationRoutes);
 app.use('/api', settingsRoutes); // For /api/marketing-packages
 app.use('/api/property-data', propertyDataRoutes);
+app.use('/api/portfolio', portfolioRoutes);
 
 // Root route
 app.get('/api', (req: Request, res: Response) => {

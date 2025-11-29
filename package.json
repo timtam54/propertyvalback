@@ -17,6 +17,8 @@
     "jsonwebtoken": "^9.0.2",
     "mongodb": "^6.3.0",
     "multer": "^1.4.5-lts.1",
+    "openai": "^6.9.1",
+    "pdf-parse": "^2.4.5",
     "stripe": "^14.10.0",
     "uuid": "^9.0.1"
   },
@@ -27,7 +29,8 @@
     "@types/jsonwebtoken": "^9.0.5",
     "@types/multer": "^1.4.13",
     "@types/node": "^20.10.6",
-    "@types/uuid": "^9.0.7",
+    "@types/pdf-parse": "^1.1.5",
+    "@types/uuid": "^9.0.8",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.3.3"
   }

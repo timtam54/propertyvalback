@@ -8,6 +8,53 @@ const router = Router();
 
 router.use(extractUserEmail);
 
+// GET /api/agent-settings (alias for frontend compatibility)
+router.get('/agent-settings', async (req: Request, res: Response) => {
+  try {
+    const db = getDb();
+    const settings = await db.collection('settings').findOne({ setting_id: 'agent_settings' });
+
+    if (!settings) {
+      res.json({
+        success: true,
+        settings: {
+          agent1_name: '',
+          agent1_phone: '',
+          agent2_name: '',
+          agent2_phone: '',
+          agent_email: ''
+        }
+      });
+      return;
+    }
+
+    const { _id, setting_id, ...agentData } = settings;
+    res.json({ success: true, settings: agentData });
+  } catch (error) {
+    console.error('Get agent settings error:', error);
+    res.status(500).json({ detail: 'Failed to get agent settings' });
+  }
+});
+
+// POST /api/agent-settings (alias for frontend compatibility)
+router.post('/agent-settings', async (req: Request, res: Response) => {
+  try {
+    const settings = req.body;
+    const db = getDb();
+
+    await db.collection('settings').updateOne(
+      { setting_id: 'agent_settings' },
+      { $set: { ...settings, setting_id: 'agent_settings' } },
+      { upsert: true }
+    );
+
+    res.json({ success: true, ...settings });
+  } catch (error) {
+    console.error('Update agent settings error:', error);
+    res.status(500).json({ detail: 'Failed to update agent settings' });
+  }
+});
+
 // GET /api/settings/agent
 router.get('/agent', async (req: Request, res: Response) => {
   try {
@@ -180,7 +227,7 @@ router.get('/marketing-packages', async (req: Request, res: Response) => {
       .sort({ order: 1 })
       .toArray();
 
-    res.json(packages);
+    res.json({ success: true, packages });
   } catch (error) {
     console.error('Get marketing packages error:', error);
     res.status(500).json({ detail: 'Failed to get marketing packages' });

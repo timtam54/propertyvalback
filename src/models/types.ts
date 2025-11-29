@@ -73,11 +73,16 @@ export interface Property {
   rp_data_report?: string | null;
   rp_data_upload_date?: string | null;
   rp_data_filename?: string | null;
+  additional_report?: string | null;
   agent_id?: string | null;
   agent_name?: string | null;
   agency_id: string;
   user_email?: string | null;
   created_at: Date;
+  // Sale status fields
+  status?: 'active' | 'sold' | null;
+  sold_price?: number | null;
+  sale_date?: string | null;
 }
 
 export interface PropertyCreate {
