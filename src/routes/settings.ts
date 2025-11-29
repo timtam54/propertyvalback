@@ -12,7 +12,7 @@ router.use(extractUserEmail);
 router.get('/agent', async (req: Request, res: Response) => {
   try {
     const db = getDb();
-    const settings = await db.collection('settings').findOne({ _id: 'agent_settings' });
+    const settings = await db.collection('settings').findOne({ setting_id: 'agent_settings' });
 
     if (!settings) {
       res.json({
@@ -39,8 +39,8 @@ router.put('/agent', async (req: Request, res: Response) => {
     const db = getDb();
 
     await db.collection('settings').updateOne(
-      { _id: 'agent_settings' },
-      { $set: settings },
+      { setting_id: 'agent_settings' },
+      { $set: { ...settings, setting_id: 'agent_settings' } },
       { upsert: true }
     );
 
@@ -55,7 +55,7 @@ router.put('/agent', async (req: Request, res: Response) => {
 router.get('/api-keys', async (req: Request, res: Response) => {
   try {
     const db = getDb();
-    const settings = await db.collection('settings').findOne({ _id: 'api_keys' });
+    const settings = await db.collection('settings').findOne({ setting_id: 'api_keys' });
 
     if (!settings) {
       res.json({
@@ -72,7 +72,7 @@ router.get('/api-keys', async (req: Request, res: Response) => {
     // Mask keys for security
     const maskedSettings: any = {};
     for (const [key, value] of Object.entries(settings)) {
-      if (key === '_id') continue;
+      if (key === '_id' || key === 'setting_id') continue;
       if (typeof value === 'string' && value.length > 8) {
         maskedSettings[key] = value.substring(0, 4) + '****' + value.substring(value.length - 4);
       } else {
@@ -96,8 +96,8 @@ router.put('/api-keys', async (req: Request, res: Response) => {
     settings.updated_at = new Date();
 
     await db.collection('settings').updateOne(
-      { _id: 'api_keys' },
-      { $set: settings },
+      { setting_id: 'api_keys' },
+      { $set: { ...settings, setting_id: 'api_keys' } },
       { upsert: true }
     );
 
@@ -112,7 +112,7 @@ router.put('/api-keys', async (req: Request, res: Response) => {
 router.get('/market-context', async (req: Request, res: Response) => {
   try {
     const db = getDb();
-    const context = await db.collection('settings').findOne({ _id: 'market_context' });
+    const context = await db.collection('settings').findOne({ setting_id: 'market_context' });
 
     if (!context) {
       // Return defaults
@@ -140,7 +140,7 @@ router.get('/market-context', async (req: Request, res: Response) => {
       return;
     }
 
-    const { _id, ...contextData } = context;
+    const { _id, setting_id, ...contextData } = context;
     res.json(contextData);
   } catch (error) {
     console.error('Get market context error:', error);
@@ -158,8 +158,8 @@ router.put('/market-context', async (req: Request, res: Response) => {
     context.updated_by = 'manual';
 
     await db.collection('settings').updateOne(
-      { _id: 'market_context' },
-      { $set: context },
+      { setting_id: 'market_context' },
+      { $set: { ...context, setting_id: 'market_context' } },
       { upsert: true }
     );
 
