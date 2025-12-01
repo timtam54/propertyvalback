@@ -48,6 +48,91 @@ const upload = multer({
 // Use extractUserEmail middleware for all routes
 router.use(extractUserEmail);
 
+// GET /api/properties/sold/list - Get all sold properties
+router.get('/sold/list', async (req: Request, res: Response) => {
+  try {
+    const db = await getDb();
+    const { suburb } = req.query;
+
+    const query: any = { status: 'sold' };
+
+    // If suburb filter provided, match on location containing the suburb
+    if (suburb && typeof suburb === 'string') {
+      query.location = { $regex: suburb, $options: 'i' };
+    }
+
+    const properties = await db
+      .collection<Property>('properties')
+      .find(query, { projection: { _id: 0 } })
+      .sort({ sale_date: -1 })
+      .toArray();
+
+    res.json({ success: true, properties });
+  } catch (error) {
+    console.error('Get sold properties error:', error);
+    res.status(500).json({ detail: 'Failed to fetch sold properties' });
+  }
+});
+
+// GET /api/properties/sold/suburbs - Get unique suburbs from sold properties
+router.get('/sold/suburbs', async (req: Request, res: Response) => {
+  try {
+    const db = await getDb();
+
+    const properties = await db
+      .collection<Property>('properties')
+      .find({ status: 'sold' }, { projection: { location: 1, _id: 0 } })
+      .toArray();
+
+    // Extract suburbs from locations (assuming format like "123 Street, Suburb, State")
+    const suburbs = new Set<string>();
+    properties.forEach(p => {
+      if (p.location) {
+        const parts = p.location.split(',').map(s => s.trim());
+        // Usually suburb is the second-to-last or second part
+        if (parts.length >= 2) {
+          // Try to get suburb - usually after street address
+          const suburb = parts.length >= 3 ? parts[parts.length - 2] : parts[1];
+          if (suburb && !suburb.match(/^\d/)) { // Skip if starts with number
+            suburbs.add(suburb);
+          }
+        }
+      }
+    });
+
+    res.json({ success: true, suburbs: Array.from(suburbs).sort() });
+  } catch (error) {
+    console.error('Get sold suburbs error:', error);
+    res.status(500).json({ detail: 'Failed to fetch suburbs' });
+  }
+});
+
+// POST /api/properties/:propertyId/resell - Move sold property back to active
+router.post('/:propertyId/resell', async (req: Request, res: Response) => {
+  try {
+    const { propertyId } = req.params;
+    const db = await getDb();
+
+    const result = await db.collection<Property>('properties').updateOne(
+      { id: propertyId },
+      {
+        $set: { status: 'active' },
+        $unset: { sold_price: '', sale_date: '' }
+      }
+    );
+
+    if (result.matchedCount === 0) {
+      res.status(404).json({ detail: 'Property not found' });
+      return;
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Resell property error:', error);
+    res.status(500).json({ detail: 'Failed to resell property' });
+  }
+});
+
 // POST /api/properties
 router.post('/', async (req: Request, res: Response) => {
   try {
