@@ -12,6 +12,7 @@ import settingsRoutes from './routes/settings';
 import evaluationRoutes from './routes/evaluation';
 import propertyDataRoutes from './routes/propertyData';
 import portfolioRoutes from './routes/portfolio';
+import auditRoutes from './routes/audit';
 
 // Load environment variables
 dotenv.config();
@@ -69,12 +70,18 @@ app.use('/api/properties', propertyRoutes);
 app.use('/api/agents', agentRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/api-settings', settingsRoutes); // For frontend compatibility
 app.use('/api/evaluate-quick', evaluationRoutes);
 app.use('/api', settingsRoutes); // For /api/marketing-packages
 app.use('/api/property-data', propertyDataRoutes);
 app.use('/api/portfolio', portfolioRoutes);
+app.use('/api/audit', auditRoutes);
 
 // Root route
+app.get('/', (req: Request, res: Response) => {
+  res.send('Backend alive... at least for now');
+});
+
 app.get('/api', (req: Request, res: Response) => {
   res.json({ message: 'Real Estate Property Pitch Generator API' });
 });
@@ -95,35 +102,31 @@ app.use((req: Request, res: Response) => {
   res.status(404).json({ detail: 'Not found' });
 });
 
-// Start server
-async function startServer() {
-  try {
-    // Connect to database
-    await connectToDatabase();
+// Connect to database on cold start
+connectToDatabase().catch(err => {
+  console.error('Failed to connect to database:', err);
+});
 
-    // Start listening
-    app.listen(PORT, () => {
-      console.log(`Server running on http://localhost:${PORT}`);
-      console.log(`CORS enabled for: ${corsOrigins.join(', ')}`);
-    });
-  } catch (error) {
-    console.error('Failed to start server:', error);
-    process.exit(1);
-  }
+// Export for Vercel serverless
+export default app;
+
+// Start server only when running locally (not on Vercel)
+if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`CORS enabled for: ${corsOrigins.join(', ')}`);
+  });
+
+  // Handle graceful shutdown
+  process.on('SIGINT', async () => {
+    console.log('\nShutting down gracefully...');
+    await closeDatabase();
+    process.exit(0);
+  });
+
+  process.on('SIGTERM', async () => {
+    console.log('\nShutting down gracefully...');
+    await closeDatabase();
+    process.exit(0);
+  });
 }
-
-// Handle graceful shutdown
-process.on('SIGINT', async () => {
-  console.log('\nShutting down gracefully...');
-  await closeDatabase();
-  process.exit(0);
-});
-
-process.on('SIGTERM', async () => {
-  console.log('\nShutting down gracefully...');
-  await closeDatabase();
-  process.exit(0);
-});
-
-// Start the server
-startServer();

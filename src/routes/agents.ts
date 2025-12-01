@@ -9,7 +9,7 @@ const router = Router();
 // GET /api/agents
 router.get('/', async (req: Request, res: Response) => {
   try {
-    const db = getDb();
+    const db = await getDb();
     const agents = await db
       .collection<Agent>('agents')
       .find({}, { projection: { _id: 0 } })
@@ -28,7 +28,7 @@ router.get('/:agentId', async (req: Request, res: Response) => {
   try {
     const { agentId } = req.params;
 
-    const db = getDb();
+    const db = await getDb();
     const agent = await db
       .collection<Agent>('agents')
       .findOne({ id: agentId }, { projection: { _id: 0 } });
@@ -50,7 +50,7 @@ router.post('/', async (req: Request, res: Response) => {
   try {
     const agentData = req.body;
 
-    const db = getDb();
+    const db = await getDb();
 
     // Check if agent with this email already exists
     const existingAgent = await db.collection<Agent>('agents').findOne({ email: agentData.email });
@@ -86,7 +86,7 @@ router.put('/:agentId', async (req: Request, res: Response) => {
     const { agentId } = req.params;
     const updateData = req.body;
 
-    const db = getDb();
+    const db = await getDb();
 
     const agent = await db
       .collection<Agent>('agents')
@@ -118,7 +118,7 @@ router.delete('/:agentId', async (req: Request, res: Response) => {
   try {
     const { agentId } = req.params;
 
-    const db = getDb();
+    const db = await getDb();
 
     const result = await db.collection<Agent>('agents').deleteOne({ id: agentId });
 

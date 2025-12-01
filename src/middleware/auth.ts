@@ -33,7 +33,7 @@ export async function authenticateToken(
   }
 
   try {
-    const db = getDb();
+    const db = await getDb();
     const user = await db.collection<User>('users').findOne({ id: payload.sub });
 
     if (!user || !user.is_active) {

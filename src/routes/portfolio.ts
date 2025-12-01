@@ -42,7 +42,7 @@ router.post('/import', upload.single('file'), async (req: Request, res: Response
     }
 
     const csvContent = req.file.buffer.toString('utf-8');
-    const db = getDb();
+    const db = await getDb();
     const agentsCollection = db.collection('agents');
     const propertiesCollection = db.collection('properties');
 

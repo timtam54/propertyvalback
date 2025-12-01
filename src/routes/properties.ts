@@ -5,8 +5,18 @@ import { extractUserEmail } from '../middleware/auth';
 import { Property, PropertyCreate } from '../models/types';
 import OpenAI from 'openai';
 import multer from 'multer';
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const pdf = require('pdf-parse');
+import { extractText } from 'unpdf';
+
+async function extractPdfText(buffer: Buffer): Promise<string> {
+  // Convert Buffer to Uint8Array as required by unpdf
+  const uint8Array = new Uint8Array(buffer);
+  const { text } = await extractText(uint8Array);
+  // text is an array of strings (one per page), join them
+  if (Array.isArray(text)) {
+    return text.join('\n');
+  }
+  return String(text);
+}
 
 const router = Router();
 
@@ -97,7 +107,7 @@ router.post('/', async (req: Request, res: Response) => {
       return;
     }
 
-    const db = getDb();
+    const db = await getDb();
     await db.collection<Property>('properties').insertOne(property);
 
     res.status(201).json(property);
@@ -116,10 +126,26 @@ router.post('/', async (req: Request, res: Response) => {
 // GET /api/properties
 router.get('/', async (req: Request, res: Response) => {
   try {
-    const db = getDb();
+    const userEmail = req.userEmail;
+    const db = await getDb();
+
+    // Build query based on user email filter
+    // If user is logged in, show their properties AND properties without user_email (legacy)
+    let query: any = {};
+
+    if (userEmail) {
+      query = {
+        $or: [
+          { user_email: userEmail },
+          { user_email: null },
+          { user_email: { $exists: false } }
+        ]
+      };
+    }
+
     const properties = await db
       .collection<Property>('properties')
-      .find({}, { projection: { _id: 0 } })
+      .find(query, { projection: { _id: 0 } })
       .limit(1000)
       .toArray();
 
@@ -130,35 +156,58 @@ router.get('/', async (req: Request, res: Response) => {
   }
 });
 
+// POST /api/properties/extract-pdf-text - Extract text from a PDF without saving to a property
+// IMPORTANT: This route must be defined BEFORE /:propertyId routes to avoid matching "extract-pdf-text" as a propertyId
+router.post('/extract-pdf-text', upload.single('file'), async (req: Request, res: Response) => {
+  try {
+    if (!req.file) {
+      res.status(400).json({ detail: 'PDF file is required' });
+      return;
+    }
+
+    // Parse PDF content using unpdf
+    let pdfText = '';
+    try {
+      pdfText = await extractPdfText(req.file.buffer);
+    } catch (parseError) {
+      console.error('PDF parsing error:', parseError);
+      res.status(400).json({ detail: 'Could not extract text from PDF. The PDF may be image-based. Please try pasting the text instead.' });
+      return;
+    }
+
+    if (!pdfText || pdfText.trim() === '') {
+      res.status(400).json({ detail: 'Could not extract text from PDF. The PDF may be image-based. Please try pasting the text instead.' });
+      return;
+    }
+
+    res.json({ success: true, text: pdfText });
+  } catch (error) {
+    console.error('Extract PDF text error:', error);
+    res.status(500).json({ detail: 'Failed to extract text from PDF' });
+  }
+});
+
 // GET /api/properties/:propertyId
 router.get('/:propertyId', async (req: Request, res: Response) => {
   try {
     const { propertyId } = req.params;
     const userEmail = req.userEmail;
 
-    const db = getDb();
+    const db = await getDb();
 
-    // Build query to check both property existence and ownership
-    const query: any = { id: propertyId };
-    if (userEmail) {
-      query.user_email = userEmail;
-    }
-
+    // First get the property
     const property = await db
       .collection<Property>('properties')
-      .findOne(query, { projection: { _id: 0 } });
+      .findOne({ id: propertyId }, { projection: { _id: 0 } });
 
     if (!property) {
-      // Check if property exists but belongs to different user
-      const existingProp = await db
-        .collection<Property>('properties')
-        .findOne({ id: propertyId }, { projection: { _id: 0 } });
-
-      if (existingProp) {
-        res.status(403).json({ detail: 'Access denied: You can only view your own properties' });
-        return;
-      }
       res.status(404).json({ detail: 'Property not found' });
+      return;
+    }
+
+    // Check ownership: allow access if user owns it, or if it's a legacy property (no user_email)
+    if (userEmail && property.user_email && property.user_email !== userEmail) {
+      res.status(403).json({ detail: 'Access denied: You can only view your own properties' });
       return;
     }
 
@@ -176,29 +225,21 @@ router.put('/:propertyId', async (req: Request, res: Response) => {
     const userEmail = req.userEmail;
     const updateData = req.body as PropertyCreate;
 
-    const db = getDb();
+    const db = await getDb();
 
-    // Build query to check both property existence and ownership
-    const query: any = { id: propertyId };
-    if (userEmail) {
-      query.user_email = userEmail;
-    }
-
+    // First get the property
     const property = await db
       .collection<Property>('properties')
-      .findOne(query, { projection: { _id: 0 } });
+      .findOne({ id: propertyId }, { projection: { _id: 0 } });
 
     if (!property) {
-      // Check if property exists but belongs to different user
-      const existingProp = await db
-        .collection<Property>('properties')
-        .findOne({ id: propertyId }, { projection: { _id: 0 } });
-
-      if (existingProp) {
-        res.status(403).json({ detail: 'Access denied: You can only update your own properties' });
-        return;
-      }
       res.status(404).json({ detail: 'Property not found' });
+      return;
+    }
+
+    // Check ownership: allow update if user owns it, or if it's a legacy property (no user_email)
+    if (userEmail && property.user_email && property.user_email !== userEmail) {
+      res.status(403).json({ detail: 'Access denied: You can only update your own properties' });
       return;
     }
 
@@ -213,6 +254,14 @@ router.put('/:propertyId', async (req: Request, res: Response) => {
         detail: `Property data too large (${(docSize / 1024 / 1024).toFixed(1)}MB). Limit is 15MB. You have ${numImages} images. Please reduce to maximum 10-15 images.`
       });
       return;
+    }
+
+    // If the property doesn't have a user_email, set it to the current user
+    if (!property.user_email && updateData.user_email) {
+      // user_email is already in updateData, it will be set
+    } else if (property.user_email && updateData.user_email) {
+      // Don't overwrite existing user_email
+      delete updateData.user_email;
     }
 
     await db.collection<Property>('properties').updateOne(
@@ -244,33 +293,25 @@ router.delete('/:propertyId', async (req: Request, res: Response) => {
     const { propertyId } = req.params;
     const userEmail = req.userEmail;
 
-    const db = getDb();
+    const db = await getDb();
 
-    // Build query to check both property existence and ownership
-    const query: any = { id: propertyId };
-    if (userEmail) {
-      query.user_email = userEmail;
-    }
-
+    // First get the property
     const property = await db
       .collection<Property>('properties')
-      .findOne(query, { projection: { _id: 0 } });
+      .findOne({ id: propertyId }, { projection: { _id: 0 } });
 
     if (!property) {
-      // Check if property exists but belongs to different user
-      const existingProp = await db
-        .collection<Property>('properties')
-        .findOne({ id: propertyId }, { projection: { _id: 0 } });
-
-      if (existingProp) {
-        res.status(403).json({ detail: 'Access denied: You can only delete your own properties' });
-        return;
-      }
       res.status(404).json({ detail: 'Property not found' });
       return;
     }
 
-    const result = await db.collection<Property>('properties').deleteOne(query);
+    // Check ownership: allow delete if user owns it, or if it's a legacy property (no user_email)
+    if (userEmail && property.user_email && property.user_email !== userEmail) {
+      res.status(403).json({ detail: 'Access denied: You can only delete your own properties' });
+      return;
+    }
+
+    const result = await db.collection<Property>('properties').deleteOne({ id: propertyId });
 
     if (result.deletedCount === 0) {
       res.status(404).json({ detail: 'Property not found' });
@@ -288,7 +329,7 @@ router.delete('/:propertyId', async (req: Request, res: Response) => {
 router.post('/:propertyId/generate-pitch', async (req: Request, res: Response) => {
   try {
     const { propertyId } = req.params;
-    const db = getDb();
+    const db = await getDb();
 
     const property = await db
       .collection<Property>('properties')
@@ -363,7 +404,7 @@ router.put('/:propertyId/update-pitch', async (req: Request, res: Response) => {
       return;
     }
 
-    const db = getDb();
+    const db = await getDb();
 
     const result = await db.collection<Property>('properties').updateOne(
       { id: propertyId },
@@ -386,7 +427,7 @@ router.put('/:propertyId/update-pitch', async (req: Request, res: Response) => {
 router.post('/:propertyId/generate-facebook-ad', async (req: Request, res: Response) => {
   try {
     const { propertyId } = req.params;
-    const db = getDb();
+    const db = await getDb();
 
     const property = await db
       .collection<Property>('properties')
@@ -450,7 +491,7 @@ router.post('/:propertyId/generate-facebook-ad', async (req: Request, res: Respo
 router.post('/:propertyId/generate-facebook-post', async (req: Request, res: Response) => {
   try {
     const { propertyId } = req.params;
-    const db = getDb();
+    const db = await getDb();
 
     const property = await db
       .collection<Property>('properties')
@@ -509,7 +550,7 @@ router.put('/:propertyId/update-rp-data', async (req: Request, res: Response) =>
       return;
     }
 
-    const db = getDb();
+    const db = await getDb();
 
     const result = await db.collection<Property>('properties').updateOne(
       { id: propertyId },
@@ -543,18 +584,22 @@ router.post('/:propertyId/upload-rp-data-pdf', upload.single('file'), async (req
       return;
     }
 
-    // Parse PDF content
+    // Parse PDF content using unpdf
     let pdfText = '';
     try {
-      const pdfData = await pdf(req.file.buffer);
-      pdfText = pdfData.text;
+      pdfText = await extractPdfText(req.file.buffer);
     } catch (pdfError) {
       console.error('PDF parsing error:', pdfError);
-      res.status(400).json({ detail: 'Failed to parse PDF file' });
+      res.status(400).json({ detail: 'Failed to parse PDF file. Please try pasting the text instead.' });
       return;
     }
 
-    const db = getDb();
+    if (!pdfText || pdfText.trim().length === 0) {
+      res.status(400).json({ detail: 'Could not extract text from PDF. The PDF may be image-based. Please try pasting the text instead.' });
+      return;
+    }
+
+    const db = await getDb();
 
     const result = await db.collection<Property>('properties').updateOne(
       { id: propertyId },
@@ -590,7 +635,7 @@ router.put('/:propertyId/update-additional-report', async (req: Request, res: Re
       return;
     }
 
-    const db = getDb();
+    const db = await getDb();
 
     const result = await db.collection<Property>('properties').updateOne(
       { id: propertyId },
@@ -609,6 +654,54 @@ router.put('/:propertyId/update-additional-report', async (req: Request, res: Re
   }
 });
 
+// POST /api/properties/:propertyId/upload-additional-report-pdf
+router.post('/:propertyId/upload-additional-report-pdf', upload.single('file'), async (req: Request, res: Response) => {
+  try {
+    const { propertyId } = req.params;
+
+    if (!req.file) {
+      res.status(400).json({ detail: 'PDF file is required' });
+      return;
+    }
+
+    // Parse PDF content using unpdf
+    let pdfText = '';
+    try {
+      pdfText = await extractPdfText(req.file.buffer);
+    } catch (pdfError) {
+      console.error('PDF parsing error:', pdfError);
+      res.status(400).json({ detail: 'Failed to parse PDF file. Please try pasting the text instead.' });
+      return;
+    }
+
+    if (!pdfText || pdfText.trim().length === 0) {
+      res.status(400).json({ detail: 'Could not extract text from PDF. The PDF may be image-based. Please try pasting the text instead.' });
+      return;
+    }
+
+    const db = await getDb();
+
+    const result = await db.collection<Property>('properties').updateOne(
+      { id: propertyId },
+      {
+        $set: {
+          additional_report: pdfText
+        }
+      }
+    );
+
+    if (result.matchedCount === 0) {
+      res.status(404).json({ detail: 'Property not found' });
+      return;
+    }
+
+    res.json({ success: true, filename: req.file.originalname });
+  } catch (error) {
+    console.error('Upload additional report PDF error:', error);
+    res.status(500).json({ detail: 'Failed to upload PDF' });
+  }
+});
+
 // POST /api/properties/:propertyId/mark-sold
 router.post('/:propertyId/mark-sold', async (req: Request, res: Response) => {
   try {
@@ -620,7 +713,7 @@ router.post('/:propertyId/mark-sold', async (req: Request, res: Response) => {
       return;
     }
 
-    const db = getDb();
+    const db = await getDb();
 
     const result = await db.collection<Property>('properties').updateOne(
       { id: propertyId },
@@ -649,7 +742,7 @@ router.post('/:propertyId/mark-sold', async (req: Request, res: Response) => {
 router.post('/:propertyId/evaluate', async (req: Request, res: Response) => {
   try {
     const { propertyId } = req.params;
-    const db = getDb();
+    const db = await getDb();
 
     const property = await db
       .collection<Property>('properties')
@@ -788,7 +881,7 @@ router.post('/:propertyId/update-evaluation-report', async (req: Request, res: R
       return;
     }
 
-    const db = getDb();
+    const db = await getDb();
 
     const result = await db.collection<Property>('properties').updateOne(
       { id: propertyId },
@@ -818,7 +911,7 @@ router.post('/:propertyId/apply-valuation', async (req: Request, res: Response) 
       return;
     }
 
-    const db = getDb();
+    const db = await getDb();
 
     const result = await db.collection<Property>('properties').updateOne(
       { id: propertyId },
@@ -848,7 +941,7 @@ router.post('/:propertyId/apply-marketing-strategy', async (req: Request, res: R
       return;
     }
 
-    const db = getDb();
+    const db = await getDb();
 
     const updateData: any = {
       marketing_strategy,
@@ -883,7 +976,7 @@ router.post('/:propertyId/apply-marketing-strategy', async (req: Request, res: R
 router.post('/:propertyId/generate-evaluation-ad', async (req: Request, res: Response) => {
   try {
     const { propertyId } = req.params;
-    const db = getDb();
+    const db = await getDb();
 
     const property = await db
       .collection<Property>('properties')

@@ -65,7 +65,7 @@ router.post('/create-checkout', authenticateToken, async (req: Request, res: Res
     });
 
     // Store pending transaction
-    const db = getDb();
+    const db = await getDb();
     const transaction = {
       session_id: session.id,
       user_id: user.id,
@@ -101,7 +101,7 @@ router.get('/checkout-status/:sessionId', authenticateToken, async (req: Request
     const { sessionId } = req.params;
 
     const session = await stripe.checkout.sessions.retrieve(sessionId);
-    const db = getDb();
+    const db = await getDb();
 
     // Find transaction
     const transaction = await db.collection('payment_transactions').findOne({ session_id: sessionId });

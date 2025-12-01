@@ -22,7 +22,7 @@ router.post('/signup', async (req: Request, res: Response) => {
       return;
     }
 
-    const db = getDb();
+    const db = await getDb();
 
     // Check if user already exists
     const existingUser = await db.collection<User>('users').findOne({ email });
@@ -83,7 +83,7 @@ router.post('/login', async (req: Request, res: Response) => {
       return;
     }
 
-    const db = getDb();
+    const db = await getDb();
 
     // Find user by email (username field contains email in OAuth2 form)
     const user = await db.collection<User>('users').findOne({ email: username });
@@ -141,6 +141,84 @@ router.get('/me', authenticateToken, async (req: Request, res: Response) => {
   }
 });
 
+// POST /api/auth/oauth-sync - Sync OAuth user to users table
+router.post('/oauth-sync', async (req: Request, res: Response) => {
+  try {
+    const { email, name, provider, picture } = req.body;
+
+    if (!email) {
+      res.status(400).json({ detail: 'Email is required' });
+      return;
+    }
+
+    const db = await getDb();
+
+    // Check if user already exists
+    const existingUser = await db.collection<User>('users').findOne({ email });
+
+    if (existingUser) {
+      // Update last login
+      await db.collection<User>('users').updateOne(
+        { email },
+        {
+          $set: {
+            last_login: new Date(),
+            // Update name/picture if provided (user might update their profile)
+            ...(name && { username: name }),
+            ...(picture && { picture })
+          }
+        }
+      );
+
+      res.json({
+        success: true,
+        user: {
+          id: existingUser.id,
+          email: existingUser.email,
+          username: name || existingUser.username,
+          isNew: false
+        }
+      });
+    } else {
+      // Create new user
+      const userId = Date.now().toString();
+      const userDoc: User = {
+        id: userId,
+        email,
+        username: name || email.split('@')[0],
+        hashed_password: '', // No password for OAuth users
+        subscription_tier: 'free',
+        subscription_active: false,
+        subscription_end_date: null,
+        trial_active: false,
+        trial_end_date: null,
+        stripe_customer_id: null,
+        stripe_subscription_id: null,
+        created_at: new Date(),
+        last_login: new Date(),
+        is_active: true,
+        auth_provider: provider || 'oauth',
+        picture: picture || null
+      };
+
+      await db.collection<User>('users').insertOne(userDoc);
+
+      res.status(201).json({
+        success: true,
+        user: {
+          id: userId,
+          email,
+          username: name || email.split('@')[0],
+          isNew: true
+        }
+      });
+    }
+  } catch (error) {
+    console.error('OAuth sync error:', error);
+    res.status(500).json({ detail: 'Failed to sync OAuth user' });
+  }
+});
+
 // GET /api/auth/subscription-status
 router.get('/subscription-status', authenticateToken, async (req: Request, res: Response) => {
   try {
@@ -169,6 +247,33 @@ router.get('/subscription-status', authenticateToken, async (req: Request, res: 
   } catch (error) {
     console.error('Subscription status error:', error);
     res.status(500).json({ detail: 'Failed to get subscription status' });
+  }
+});
+
+// GET /api/auth/users - Get all users (admin endpoint)
+router.get('/users', async (req: Request, res: Response) => {
+  try {
+    const db = await getDb();
+
+    const users = await db
+      .collection<User>('users')
+      .find({}, {
+        projection: {
+          _id: 0,
+          hashed_password: 0 // Never expose passwords
+        }
+      })
+      .sort({ last_login: -1 })
+      .toArray();
+
+    res.json({
+      success: true,
+      users,
+      total: users.length
+    });
+  } catch (error) {
+    console.error('Get users error:', error);
+    res.status(500).json({ detail: 'Failed to get users' });
   }
 });
 

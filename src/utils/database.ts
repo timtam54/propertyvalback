@@ -77,17 +77,32 @@ async function createIndexes(): Promise<void> {
     await db.collection('agents').createIndex({ email: 1 }, { unique: true });
     await db.collection('agents').createIndex({ id: 1 }, { unique: true });
 
+    // Audit indexes
+    await db.collection('audit').createIndex({ id: 1 }, { unique: true });
+    await db.collection('audit').createIndex({ dte: -1 });
+    await db.collection('audit').createIndex({ username: 1 });
+    await db.collection('audit').createIndex({ page: 1 });
+    await db.collection('audit').createIndex({ propertyid: 1 });
+
     console.log('Database indexes created successfully');
   } catch (error) {
     console.warn('Error creating indexes (may already exist):', error);
   }
 }
 
-export function getDb(): Db {
-  if (!db) {
-    throw new Error('Database not connected. Call connectToDatabase() first.');
+let connectionPromise: Promise<Db> | null = null;
+
+export async function getDb(): Promise<Db> {
+  if (db) return db;
+
+  // If connection is in progress, wait for it
+  if (connectionPromise) {
+    return connectionPromise;
   }
-  return db;
+
+  // Start new connection
+  connectionPromise = connectToDatabase();
+  return connectionPromise;
 }
 
 export async function closeDatabase(): Promise<void> {

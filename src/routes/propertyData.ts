@@ -9,7 +9,7 @@ const upload = multer({ storage: multer.memoryStorage() });
 // GET /api/property-data/stats
 router.get('/stats', async (req: Request, res: Response) => {
   try {
-    const db = getDb();
+    const db = await getDb();
     const collection = db.collection('property_sales');
 
     const totalSales = await collection.countDocuments();
@@ -74,7 +74,7 @@ router.get('/postcodes', async (req: Request, res: Response) => {
       return;
     }
 
-    const db = getDb();
+    const db = await getDb();
     const collection = db.collection('property_sales');
 
     const postcodes = await collection.aggregate([
@@ -123,7 +123,7 @@ router.get('/search', async (req: Request, res: Response) => {
       limit = '100'
     } = req.query;
 
-    const db = getDb();
+    const db = await getDb();
     const collection = db.collection('property_sales');
 
     const query: any = {};
@@ -220,7 +220,7 @@ router.post('/import-csv', upload.single('file'), async (req: Request, res: Resp
     }
 
     const csvContent = req.file.buffer.toString('utf-8');
-    const db = getDb();
+    const db = await getDb();
     const collection = db.collection('property_sales');
 
     // Parse CSV

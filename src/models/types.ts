@@ -14,6 +14,9 @@ export interface User {
   created_at: Date;
   last_login: Date | null;
   is_active: boolean;
+  // OAuth fields
+  auth_provider?: 'local' | 'google' | 'microsoft' | 'oauth' | null;
+  picture?: string | null;
 }
 
 export interface UserSignup {
@@ -103,6 +106,8 @@ export interface PropertyCreate {
   agent2_phone?: string | null;
   agent_email?: string | null;
   user_email?: string | null;
+  rp_data_report?: string | null;
+  additional_report?: string | null;
 }
 
 // Agent types

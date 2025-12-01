@@ -11,7 +11,7 @@ router.use(extractUserEmail);
 // GET /api/agent-settings (alias for frontend compatibility)
 router.get('/agent-settings', async (req: Request, res: Response) => {
   try {
-    const db = getDb();
+    const db = await getDb();
     const settings = await db.collection('settings').findOne({ setting_id: 'agent_settings' });
 
     if (!settings) {
@@ -40,7 +40,7 @@ router.get('/agent-settings', async (req: Request, res: Response) => {
 router.post('/agent-settings', async (req: Request, res: Response) => {
   try {
     const settings = req.body;
-    const db = getDb();
+    const db = await getDb();
 
     await db.collection('settings').updateOne(
       { setting_id: 'agent_settings' },
@@ -58,7 +58,7 @@ router.post('/agent-settings', async (req: Request, res: Response) => {
 // GET /api/settings/agent
 router.get('/agent', async (req: Request, res: Response) => {
   try {
-    const db = getDb();
+    const db = await getDb();
     const settings = await db.collection('settings').findOne({ setting_id: 'agent_settings' });
 
     if (!settings) {
@@ -83,7 +83,7 @@ router.get('/agent', async (req: Request, res: Response) => {
 router.put('/agent', async (req: Request, res: Response) => {
   try {
     const settings = req.body;
-    const db = getDb();
+    const db = await getDb();
 
     await db.collection('settings').updateOne(
       { setting_id: 'agent_settings' },
@@ -98,10 +98,86 @@ router.put('/agent', async (req: Request, res: Response) => {
   }
 });
 
+// GET /api/api-settings (frontend compatibility)
+router.get('/', async (req: Request, res: Response) => {
+  try {
+    const db = await getDb();
+    const settings = await db.collection('settings').findOne({ setting_id: 'api_keys' });
+
+    if (!settings) {
+      res.json({
+        success: true,
+        settings: {
+          domain_api_key: null,
+          corelogic_client_key: null,
+          corelogic_secret_key: null,
+          realestate_api_key: null,
+          pricefinder_api_key: null,
+          google_places_api_key: null
+        }
+      });
+      return;
+    }
+
+    // Mask keys for security when displaying
+    const maskedSettings: any = {};
+    for (const [key, value] of Object.entries(settings)) {
+      if (key === '_id' || key === 'setting_id' || key === 'updated_at') continue;
+      if (typeof value === 'string' && value.length > 8) {
+        maskedSettings[key] = value.substring(0, 4) + '****' + value.substring(value.length - 4);
+      } else {
+        maskedSettings[key] = value;
+      }
+    }
+
+    res.json({ success: true, settings: maskedSettings });
+  } catch (error) {
+    console.error('Get API settings error:', error);
+    res.status(500).json({ success: false, detail: 'Failed to get API settings' });
+  }
+});
+
+// POST /api/api-settings (frontend compatibility)
+router.post('/', async (req: Request, res: Response) => {
+  try {
+    const settings = req.body;
+    const db = await getDb();
+
+    // Get existing settings to preserve unmodified keys
+    const existing = await db.collection('settings').findOne({ setting_id: 'api_keys' });
+
+    // Only update keys that are not masked (don't contain ****)
+    const updateData: any = { setting_id: 'api_keys', updated_at: new Date() };
+
+    for (const [key, value] of Object.entries(settings)) {
+      if (typeof value === 'string') {
+        // Only update if not a masked value
+        if (!value.includes('****') && value.length > 0) {
+          updateData[key] = value;
+        } else if (existing && (existing as any)[key]) {
+          // Keep existing value
+          updateData[key] = (existing as any)[key];
+        }
+      }
+    }
+
+    await db.collection('settings').updateOne(
+      { setting_id: 'api_keys' },
+      { $set: updateData },
+      { upsert: true }
+    );
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Update API settings error:', error);
+    res.status(500).json({ success: false, detail: 'Failed to update API settings' });
+  }
+});
+
 // GET /api/settings/api-keys
 router.get('/api-keys', async (req: Request, res: Response) => {
   try {
-    const db = getDb();
+    const db = await getDb();
     const settings = await db.collection('settings').findOne({ setting_id: 'api_keys' });
 
     if (!settings) {
@@ -134,11 +210,38 @@ router.get('/api-keys', async (req: Request, res: Response) => {
   }
 });
 
+// GET /api/settings/api-keys-internal - Returns unmasked keys for internal service use
+router.get('/api-keys-internal', async (req: Request, res: Response) => {
+  try {
+    const db = await getDb();
+    const settings = await db.collection('settings').findOne({ setting_id: 'api_keys' });
+
+    if (!settings) {
+      res.json({
+        domain_api_key: null,
+        corelogic_client_key: null,
+        corelogic_secret_key: null,
+        realestate_api_key: null,
+        pricefinder_api_key: null,
+        google_places_api_key: null
+      });
+      return;
+    }
+
+    // Return unmasked keys for internal use
+    const { _id, setting_id, ...keyData } = settings;
+    res.json(keyData);
+  } catch (error) {
+    console.error('Get internal API keys error:', error);
+    res.status(500).json({ detail: 'Failed to get API keys' });
+  }
+});
+
 // PUT /api/settings/api-keys
 router.put('/api-keys', async (req: Request, res: Response) => {
   try {
     const settings = req.body;
-    const db = getDb();
+    const db = await getDb();
 
     settings.updated_at = new Date();
 
@@ -158,7 +261,7 @@ router.put('/api-keys', async (req: Request, res: Response) => {
 // GET /api/settings/market-context
 router.get('/market-context', async (req: Request, res: Response) => {
   try {
-    const db = getDb();
+    const db = await getDb();
     const context = await db.collection('settings').findOne({ setting_id: 'market_context' });
 
     if (!context) {
@@ -199,7 +302,7 @@ router.get('/market-context', async (req: Request, res: Response) => {
 router.put('/market-context', async (req: Request, res: Response) => {
   try {
     const context = req.body;
-    const db = getDb();
+    const db = await getDb();
 
     context.last_updated = new Date();
     context.updated_by = 'manual';
@@ -220,7 +323,7 @@ router.put('/market-context', async (req: Request, res: Response) => {
 // GET /api/marketing-packages
 router.get('/marketing-packages', async (req: Request, res: Response) => {
   try {
-    const db = getDb();
+    const db = await getDb();
     const packages = await db
       .collection<MarketingPackage>('marketing_packages')
       .find({ active: true }, { projection: { _id: 0 } })
@@ -238,7 +341,7 @@ router.get('/marketing-packages', async (req: Request, res: Response) => {
 router.post('/marketing-packages', async (req: Request, res: Response) => {
   try {
     const packageData = req.body;
-    const db = getDb();
+    const db = await getDb();
 
     const pkg: MarketingPackage = {
       id: uuidv4(),
@@ -265,7 +368,7 @@ router.put('/marketing-packages/:packageId', async (req: Request, res: Response)
   try {
     const { packageId } = req.params;
     const updateData = req.body;
-    const db = getDb();
+    const db = await getDb();
 
     await db.collection<MarketingPackage>('marketing_packages').updateOne(
       { id: packageId },
@@ -292,7 +395,7 @@ router.put('/marketing-packages/:packageId', async (req: Request, res: Response)
 router.delete('/marketing-packages/:packageId', async (req: Request, res: Response) => {
   try {
     const { packageId } = req.params;
-    const db = getDb();
+    const db = await getDb();
 
     // Soft delete by setting active to false
     const result = await db.collection<MarketingPackage>('marketing_packages').updateOne(
