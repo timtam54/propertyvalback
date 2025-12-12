@@ -53,10 +53,23 @@ function extractState(location: string): string {
 
 /**
  * Extract suburb from location string
+ * Handles formats like "7/12 Old Common Rd, Belgian Gardens QLD 4810, Australia"
  */
 function extractSuburb(location: string): string {
-  // Get the first part before comma
   const parts = location.split(',');
+
+  // If we have multiple parts, the suburb is usually in the second part
+  // Format: "Address, Suburb STATE POSTCODE, Country"
+  if (parts.length >= 2) {
+    const secondPart = parts[1].trim();
+    // Extract just the suburb name (before the state abbreviation)
+    const suburbMatch = secondPart.match(/^([A-Za-z\s]+)/);
+    if (suburbMatch) {
+      return suburbMatch[1].trim();
+    }
+    return secondPart.split(' ')[0]; // Fallback to first word
+  }
+
   return parts[0].trim();
 }
 
@@ -92,8 +105,11 @@ export async function searchSoldProperties(
       locations: [
         {
           state: state,
+          region: '',
+          area: '',
           suburb: suburb,
-          includeSurroundingSuburbs: true
+          postCode: '',
+          includeSurroundingSuburbs: false
         }
       ],
       pageSize: 10

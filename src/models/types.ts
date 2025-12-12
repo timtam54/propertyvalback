@@ -86,6 +86,9 @@ export interface Property {
   status?: 'active' | 'sold' | null;
   sold_price?: number | null;
   sale_date?: string | null;
+  // Geolocation
+  latitude?: number | null;
+  longitude?: number | null;
 }
 
 export interface PropertyCreate {

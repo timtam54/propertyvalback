@@ -4,6 +4,7 @@ import { getDb } from '../utils/database';
 import { extractUserEmail } from '../middleware/auth';
 import { Property, PropertyCreate } from '../models/types';
 import OpenAI from 'openai';
+import { getComparableProperties } from '../services/domainApi';
 import multer from 'multer';
 import { extractText } from 'unpdf';
 
@@ -369,6 +370,51 @@ router.put('/:propertyId', async (req: Request, res: Response) => {
       return;
     }
     res.status(500).json({ detail: 'Failed to update property' });
+  }
+});
+
+// PATCH /api/properties/:propertyId - Partial update (for lat/lng, etc.)
+router.patch('/:propertyId', async (req: Request, res: Response) => {
+  try {
+    const { propertyId } = req.params;
+    const updateData = req.body;
+
+    // Only allow specific fields to be patched
+    const allowedFields = ['latitude', 'longitude', 'status', 'is_favourite', 'tags'];
+    const filteredData: Record<string, any> = {};
+
+    for (const key of Object.keys(updateData)) {
+      if (allowedFields.includes(key)) {
+        filteredData[key] = updateData[key];
+      }
+    }
+
+    if (Object.keys(filteredData).length === 0) {
+      res.status(400).json({ detail: 'No valid fields to update' });
+      return;
+    }
+
+    const db = await getDb();
+
+    const result = await db.collection<Property>('properties').updateOne(
+      { id: propertyId },
+      { $set: filteredData }
+    );
+
+    if (result.matchedCount === 0) {
+      res.status(404).json({ detail: 'Property not found' });
+      return;
+    }
+
+    // Get updated property
+    const updatedProperty = await db
+      .collection<Property>('properties')
+      .findOne({ id: propertyId }, { projection: { _id: 0 } });
+
+    res.json(updatedProperty);
+  } catch (error: any) {
+    console.error('Patch property error:', error);
+    res.status(500).json({ detail: 'Failed to patch property' });
   }
 });
 
@@ -823,7 +869,7 @@ router.post('/:propertyId/mark-sold', async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/properties/:propertyId/evaluate - Property Valuation using AI
+// POST /api/properties/:propertyId/evaluate - Property Valuation using AI + Domain API
 router.post('/:propertyId/evaluate', async (req: Request, res: Response) => {
   try {
     const { propertyId } = req.params;
@@ -836,6 +882,55 @@ router.post('/:propertyId/evaluate', async (req: Request, res: Response) => {
     if (!property) {
       res.status(404).json({ detail: 'Property not found' });
       return;
+    }
+
+    // Get Domain API key from environment
+    const domainApiKey = process.env.DOMAIN_API_KEY || null;
+    const maskedKey = domainApiKey
+      ? `${domainApiKey.substring(0, 8)}****${domainApiKey.substring(domainApiKey.length - 4)}`
+      : 'NOT SET';
+
+    console.log(`[Evaluate] Domain API Key: ${maskedKey}`);
+
+    // Get comparable properties from Domain API
+    let comparablesData: any = {
+      comparable_sold: [],
+      statistics: { total_found: 0, price_range: {} },
+      data_source: 'AI Knowledge',
+      domain_api_key_used: maskedKey,
+      domain_api_error: null
+    };
+
+    if (domainApiKey) {
+      try {
+        console.log(`[Evaluate] Calling Domain API for ${property.location}`);
+        const domainData = await getComparableProperties(
+          domainApiKey,
+          property.location,
+          property.beds || 3,
+          property.baths || 2,
+          property.property_type || 'House'
+        );
+
+        if (domainData.statistics.total_found > 0) {
+          comparablesData = {
+            ...domainData,
+            data_source: 'Domain.com.au API',
+            domain_api_key_used: maskedKey,
+            domain_api_error: null
+          };
+          console.log(`[Evaluate] Domain API returned ${domainData.statistics.total_found} comparables`);
+        } else {
+          console.log(`[Evaluate] Domain API returned no results`);
+          comparablesData.domain_api_error = 'No comparable properties found';
+        }
+      } catch (domainError: any) {
+        console.error(`[Evaluate] Domain API error: ${domainError.message}`);
+        comparablesData.domain_api_error = domainError.message;
+      }
+    } else {
+      console.log(`[Evaluate] No Domain API key set`);
+      comparablesData.domain_api_error = 'Domain API key not configured';
     }
 
     // Build property description for evaluation
@@ -851,6 +946,15 @@ router.post('/:propertyId/evaluate', async (req: Request, res: Response) => {
       ${property.rp_data_report ? 'RP Data/Market Report:\n' + property.rp_data_report.substring(0, 2000) : ''}
     `;
 
+    // Add comparables to the prompt if available
+    let comparablesText = '';
+    if (comparablesData.comparable_sold?.length > 0) {
+      comparablesText = '\n\nCOMPARABLE SOLD PROPERTIES FROM DOMAIN:\n';
+      for (const comp of comparablesData.comparable_sold.slice(0, 5)) {
+        comparablesText += `- ${comp.address}: $${comp.price?.toLocaleString() || 'N/A'} | ${comp.beds || 'N/A'} bed, ${comp.baths || 'N/A'} bath\n`;
+      }
+    }
+
     // First, analyze images for improvements if available
     let improvementsDetected = '';
     if (property.images && property.images.length > 0) {
@@ -860,17 +964,7 @@ router.post('/:propertyId/evaluate', async (req: Request, res: Response) => {
           messages: [
             {
               role: 'system',
-              content: `You are an expert property appraiser analyzing property photos. Identify visible improvements, renovations, and features that would add value. List specific items like:
-- Modern kitchen upgrades (stone benchtops, quality appliances)
-- Bathroom renovations
-- Flooring upgrades
-- Built-in wardrobes
-- Air conditioning
-- Outdoor entertaining areas
-- Pool, landscaping
-- Security systems
-- Solar panels
-Be specific and estimate value impact where possible.`
+              content: `You are an expert property appraiser. List likely improvements and their estimated value impact.`
             },
             {
               role: 'user',
@@ -892,38 +986,11 @@ Be specific and estimate value impact where possible.`
       messages: [
         {
           role: 'system',
-          content: `You are an expert Australian property valuer creating a comprehensive valuation report. Generate a detailed report with these sections:
-
-1. ESTIMATED VALUE
-- Lower Estimate: $XXX,XXX (conservative, quick sale scenario)
-- Market Value: $XXX,XXX (most likely price based on current market)
-- Upper Estimate: $XXX,XXX (premium buyer, perfect conditions)
-
-2. VALUATION METHODOLOGY
-- Comparable sales analysis
-- Market conditions assessment
-- Property-specific adjustments
-
-3. KEY VALUE DRIVERS
-- Location benefits
-- Property features
-- Market demand factors
-
-4. MARKET POSITION
-- Current market conditions
-- Days on market expectations
-- Target buyer profile
-
-5. POSITIONING ADVICE
-- Recommended pricing strategy (Offers Over, Fixed Price, etc.)
-- Marketing approach
-- Key selling points to emphasize
-
-Use realistic Australian property values based on the location and property type. Reference current RBA rates (around 4.35%) and market conditions.`
+          content: `You are an expert Australian property valuer. Generate a detailed valuation report. Use the comparable sales data provided to inform your valuation.`
         },
         {
           role: 'user',
-          content: `Create a comprehensive property valuation report for:\n${propertyDesc}\n\n${improvementsDetected ? 'Detected Improvements:\n' + improvementsDetected : ''}`
+          content: `Create a property valuation report for:\n${propertyDesc}${comparablesText}\n\n${improvementsDetected ? 'Detected Improvements:\n' + improvementsDetected : ''}`
         }
       ],
       max_tokens: 1500,
@@ -939,7 +1006,8 @@ Use realistic Australian property values based on the location and property type
         $set: {
           evaluation_report: evaluationReport,
           evaluation_date: new Date().toISOString(),
-          improvements_detected: improvementsDetected || null
+          improvements_detected: improvementsDetected || null,
+          comparables_data: comparablesData
         }
       }
     );
@@ -947,6 +1015,7 @@ Use realistic Australian property values based on the location and property type
     res.json({
       evaluation_report: evaluationReport,
       improvements_detected: improvementsDetected || null,
+      comparables_data: comparablesData,
       success: true
     });
   } catch (error: any) {

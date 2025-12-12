@@ -84,6 +84,10 @@ async function createIndexes(): Promise<void> {
     await db.collection('audit').createIndex({ page: 1 });
     await db.collection('audit').createIndex({ propertyid: 1 });
 
+    // Historic sales cache indexes
+    await db.collection('historic_sales_cache').createIndex({ cache_key: 1 }, { unique: true });
+    await db.collection('historic_sales_cache').createIndex({ cached_at: 1 });
+
     console.log('Database indexes created successfully');
   } catch (error) {
     console.warn('Error creating indexes (may already exist):', error);
