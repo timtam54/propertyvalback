@@ -43,6 +43,51 @@ export interface InclusionItem {
   price: number;
 }
 
+// Historical valuation entry
+export interface ValuationHistoryEntry {
+  date: string;
+  estimated_value: number;
+  value_low: number;
+  value_high: number;
+  confidence_score: number;
+  confidence_level: 'high' | 'medium' | 'low';
+  data_source: string;
+  comparables_count: number;
+  notes?: string;
+}
+
+// Confidence scoring breakdown
+export interface ConfidenceScoring {
+  overall_score: number;
+  level: 'high' | 'medium' | 'low';
+  factors: {
+    comparables_count: { score: number; weight: number; description: string };
+    data_recency: { score: number; weight: number; description: string };
+    location_match: { score: number; weight: number; description: string };
+    property_similarity: { score: number; weight: number; description: string };
+    price_consistency: { score: number; weight: number; description: string };
+  };
+  recommendations: string[];
+}
+
+// Comparable property
+export interface ComparableProperty {
+  id: string;
+  address: string;
+  price: number;
+  beds: number | null;
+  baths: number | null;
+  carpark: number | null;
+  property_type: string;
+  sold_date?: string;
+  distance_km?: number;
+  similarity_score?: number;
+  source?: string;
+  selected?: boolean;
+  land_size?: number | null;
+  building_size?: number | null;
+}
+
 export interface Property {
   id: string;
   beds: number;
@@ -89,6 +134,29 @@ export interface Property {
   // Geolocation
   latitude?: number | null;
   longitude?: number | null;
+  // Valuation quality fields
+  valuation_history?: ValuationHistoryEntry[];
+  confidence_scoring?: ConfidenceScoring | null;
+  comparables_data?: {
+    comparable_sold: ComparableProperty[];
+    best_match?: ComparableProperty | null;
+    exact_matches_count?: number;
+    valuation_basis?: string;
+    statistics: {
+      total_found: number;
+      sold_count: number;
+      price_range: {
+        min: number | null;
+        max: number | null;
+        avg: number | null;
+        median: number | null;
+      };
+      exact_match_avg?: number | null;
+    };
+    data_source?: string;
+    domain_api_error?: string | null;
+  } | null;
+  selected_comparables?: string[];
 }
 
 export interface PropertyCreate {
@@ -253,3 +321,100 @@ export const SUBSCRIPTION_TIERS = {
 };
 
 export const FREE_TRIAL_DAYS = 7;
+
+// Historic Sales Matching Weights
+// These weights control how comparable properties are scored against the target property
+export interface HistoricSalesWeights {
+  id: string;
+  name: string; // e.g., 'default', 'custom_v1'
+  description?: string;
+
+  // Bedroom matching
+  bedroom_exact_match_bonus: number;      // Bonus when bedrooms match exactly (default: 0)
+  bedroom_diff_penalty_per_bed: number;   // Penalty per bedroom difference (default: 25)
+
+  // Bathroom matching
+  bathroom_exact_match_bonus: number;     // Bonus when bathrooms match exactly (default: 0)
+  bathroom_diff_penalty_per_bath: number; // Penalty per bathroom difference (default: 20)
+
+  // Property type / density matching
+  density_house_to_unit_penalty: number;        // Penalty for house vs unit mismatch (default: 40)
+  density_house_to_subdivision_penalty: number; // Penalty for house vs townhouse/villa mismatch (default: 20)
+
+  // Distance-based adjustments (in km)
+  distance_very_close_bonus: number;      // Bonus for < 500m (default: 10)
+  distance_very_close_threshold_km: number;
+  distance_close_bonus: number;           // Bonus for 500m-1km (default: 5)
+  distance_close_threshold_km: number;
+  distance_moderate_penalty: number;      // Penalty for 2-3km (default: 8)
+  distance_moderate_threshold_km: number;
+  distance_far_penalty: number;           // Penalty for 3-5km (default: 15)
+  distance_far_threshold_km: number;
+  distance_very_far_penalty: number;      // Penalty for > 5km (default: 25)
+  distance_very_far_threshold_km: number;
+
+  // Recency-based adjustments (in months)
+  recency_very_recent_bonus: number;      // Bonus for 0-3 months (default: 10)
+  recency_very_recent_threshold_months: number;
+  recency_recent_bonus: number;           // Bonus for 3-6 months (default: 5)
+  recency_recent_threshold_months: number;
+  recency_getting_old_penalty: number;    // Penalty for 12-18 months (default: 5)
+  recency_getting_old_threshold_months: number;
+  recency_old_penalty: number;            // Penalty for 18-24 months (default: 10)
+  recency_old_threshold_months: number;
+  recency_very_old_penalty: number;       // Penalty for > 24 months (default: 20)
+  recency_very_old_threshold_months: number;
+
+  // Land area matching (future use)
+  land_area_weight: number;               // Weight for land area similarity (0-1, default: 0)
+  land_area_tolerance_percent: number;    // Acceptable variance % (default: 20)
+
+  // Metadata
+  is_active: boolean;
+  created_at: Date;
+  updated_at: Date;
+  created_by?: string;
+}
+
+// Default weights - matches current hardcoded values in HistoricSalesCard.tsx
+export const DEFAULT_HISTORIC_SALES_WEIGHTS: Omit<HistoricSalesWeights, 'id' | 'created_at' | 'updated_at'> = {
+  name: 'default',
+  description: 'Default matching weights based on original algorithm',
+
+  bedroom_exact_match_bonus: 0,
+  bedroom_diff_penalty_per_bed: 25,
+
+  bathroom_exact_match_bonus: 0,
+  bathroom_diff_penalty_per_bath: 20,
+
+  density_house_to_unit_penalty: 40,
+  density_house_to_subdivision_penalty: 20,
+
+  distance_very_close_bonus: 10,
+  distance_very_close_threshold_km: 0.5,
+  distance_close_bonus: 5,
+  distance_close_threshold_km: 1,
+  distance_moderate_penalty: 8,
+  distance_moderate_threshold_km: 2,
+  distance_far_penalty: 15,
+  distance_far_threshold_km: 3,
+  distance_very_far_penalty: 25,
+  distance_very_far_threshold_km: 5,
+
+  recency_very_recent_bonus: 10,
+  recency_very_recent_threshold_months: 3,
+  recency_recent_bonus: 5,
+  recency_recent_threshold_months: 6,
+  recency_getting_old_penalty: 5,
+  recency_getting_old_threshold_months: 12,
+  recency_old_penalty: 10,
+  recency_old_threshold_months: 18,
+  recency_very_old_penalty: 20,
+  recency_very_old_threshold_months: 24,
+
+  land_area_weight: 0,
+  land_area_tolerance_percent: 20,
+
+  is_active: true,
+  created_by: 'system'
+};

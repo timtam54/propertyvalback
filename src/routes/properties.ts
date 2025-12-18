@@ -1054,6 +1054,60 @@ router.post('/:propertyId/update-evaluation-report', async (req: Request, res: R
   }
 });
 
+// POST /api/properties/:propertyId/save-evaluation - Save evaluation results from frontend
+router.post('/:propertyId/save-evaluation', async (req: Request, res: Response) => {
+  try {
+    const { propertyId } = req.params;
+    const { evaluation_report, comparables_data, confidence_scoring, valuation_entry } = req.body;
+
+    if (!evaluation_report || typeof evaluation_report !== 'string') {
+      res.status(400).json({ detail: 'Evaluation report is required' });
+      return;
+    }
+
+    const db = await getDb();
+
+    // Build update object with all evaluation fields - CLEAR all old evaluation data
+    const updateData: any = {
+      evaluation_report,
+      evaluation_date: new Date().toISOString(),
+      // Clear old fields that should not persist from previous evaluations
+      improvements_detected: null,
+      evaluation_ad: null,
+    };
+
+    if (comparables_data) {
+      updateData.comparables_data = comparables_data;
+    }
+
+    if (confidence_scoring) {
+      updateData.confidence_scoring = confidence_scoring;
+    }
+
+    // Handle valuation history - replace with only the new entry (clear old history)
+    if (valuation_entry) {
+      // Only keep the latest valuation entry, delete all previous history
+      updateData.valuation_history = [valuation_entry];
+    }
+
+    const result = await db.collection<Property>('properties').updateOne(
+      { id: propertyId },
+      { $set: updateData }
+    );
+
+    if (result.matchedCount === 0) {
+      res.status(404).json({ detail: 'Property not found' });
+      return;
+    }
+
+    console.log(`[SaveEvaluation] Saved evaluation for property ${propertyId}`);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Save evaluation error:', error);
+    res.status(500).json({ detail: 'Failed to save evaluation' });
+  }
+});
+
 // POST /api/properties/:propertyId/apply-valuation
 router.post('/:propertyId/apply-valuation', async (req: Request, res: Response) => {
   try {

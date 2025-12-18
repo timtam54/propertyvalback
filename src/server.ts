@@ -14,6 +14,7 @@ import propertyDataRoutes from './routes/propertyData';
 import portfolioRoutes from './routes/portfolio';
 import auditRoutes from './routes/audit';
 import historicSalesCacheRoutes from './routes/historicSalesCache';
+import historicSalesWeightsRoutes from './routes/historicSalesWeights';
 
 // Load environment variables
 dotenv.config();
@@ -105,6 +106,7 @@ app.use('/api/property-data', propertyDataRoutes);
 app.use('/api/portfolio', portfolioRoutes);
 app.use('/api/audit', auditRoutes);
 app.use('/api/historic-sales-cache', historicSalesCacheRoutes);
+app.use('/api/historic-sales-weights', historicSalesWeightsRoutes);
 
 // Root route
 app.get('/', (req: Request, res: Response) => {
@@ -118,6 +120,31 @@ app.get('/api', (req: Request, res: Response) => {
 // Health check
 app.get('/api/health', (req: Request, res: Response) => {
   res.json({ status: 'healthy', timestamp: new Date().toISOString() });
+});
+
+// Admin endpoint to clear all base64 images from properties
+app.post('/api/admin/clear-images', async (req: Request, res: Response) => {
+  try {
+    const { getDb } = await import('./utils/database');
+    const db = await getDb();
+
+    // Update all properties to have empty images array
+    const result = await db.collection('properties').updateMany(
+      {},
+      { $set: { images: [] } }
+    );
+
+    console.log(`[Admin] Cleared images from ${result.modifiedCount} properties`);
+
+    res.json({
+      success: true,
+      message: `Cleared images from ${result.modifiedCount} properties`,
+      modifiedCount: result.modifiedCount
+    });
+  } catch (error: any) {
+    console.error('[Admin] Clear images error:', error);
+    res.status(500).json({ detail: 'Failed to clear images: ' + error.message });
+  }
 });
 
 // Error handling middleware
