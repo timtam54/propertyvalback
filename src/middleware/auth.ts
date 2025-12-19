@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { decodeToken } from '../utils/auth';
-import { getDb } from '../utils/database';
+import { queryOne } from '../utils/database';
 import { User } from '../models/types';
 
 // Extend Express Request to include user
@@ -33,8 +33,10 @@ export async function authenticateToken(
   }
 
   try {
-    const db = await getDb();
-    const user = await db.collection<User>('users').findOne({ id: payload.sub });
+    const user = await queryOne<User>(
+      'SELECT * FROM users WHERE id = @id',
+      { id: payload.sub }
+    );
 
     if (!user || !user.is_active) {
       res.status(401).json({ detail: 'User not found or inactive' });

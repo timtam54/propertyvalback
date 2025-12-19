@@ -1,34 +1,17 @@
 import { Router, Request, Response } from 'express';
-import { getDb } from '../utils/database';
+import { queryOne, queryMany, execute, query } from '../utils/database';
 
 const router = Router();
 
 const CACHE_DURATION_DAYS = 7;
 
-interface SoldProperty {
-  id: string;
-  address: string;
-  price: number;
-  beds: number | null;
-  baths: number | null;
-  cars: number | null;
-  land_area: number | null;
-  property_type: string;
-  sold_date: string;
-  sold_date_raw: string | null;
-  source: string;
-}
-
 interface CachedHistoricSales {
+  id?: number;
   cache_key: string;
-  suburb: string;
-  state: string;
+  cached_at: Date;
   postcode: string | null;
   property_type: string;
-  sales: SoldProperty[];
-  scraped_url: string;
-  cached_at: Date;
-  total: number;
+  sales: string; // JSON string in SQL
 }
 
 /**
@@ -37,32 +20,36 @@ interface CachedHistoricSales {
  */
 router.get('/all', async (req: Request, res: Response) => {
   try {
-    const db = await getDb();
-    const collection = db.collection<CachedHistoricSales>('historic_sales_cache');
+    const entries = await queryMany<CachedHistoricSales>(
+      `SELECT * FROM historic_sales_cache ORDER BY cached_at DESC`
+    );
 
-    // Get all cached entries, sorted by cached_at descending
-    const entries = await collection
-      .find({})
-      .sort({ cached_at: -1 })
-      .toArray();
-
-    // Calculate cutoff date (7 days ago)
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - CACHE_DURATION_DAYS);
 
-    // Transform for frontend - include whether still valid
-    const searches = entries.map(entry => ({
-      cache_key: entry.cache_key,
-      suburb: entry.suburb,
-      state: entry.state.toUpperCase(),
-      postcode: entry.postcode,
-      property_type: entry.property_type,
-      cached_at: entry.cached_at,
-      total: entry.total,
-      scraped_url: entry.scraped_url,
-      is_valid: new Date(entry.cached_at) >= cutoffDate,
-      sales: entry.sales
-    }));
+    const searches = entries.map(entry => {
+      let sales = [];
+      try {
+        sales = entry.sales ? JSON.parse(entry.sales) : [];
+      } catch { }
+
+      // Extract suburb and state from cache_key (format: suburb-state-postcode-type)
+      const parts = entry.cache_key.split('-');
+      const suburb = parts[0] || '';
+      const state = parts[1] || '';
+
+      return {
+        cache_key: entry.cache_key,
+        suburb,
+        state: state.toUpperCase(),
+        postcode: entry.postcode,
+        property_type: entry.property_type,
+        cached_at: entry.cached_at,
+        total: sales.length,
+        is_valid: new Date(entry.cached_at) >= cutoffDate,
+        sales
+      };
+    });
 
     console.log(`[Historic Sales Cache] Listed ${searches.length} cached searches`);
 
@@ -71,7 +58,6 @@ router.get('/all', async (req: Request, res: Response) => {
       searches,
       total: searches.length
     });
-
   } catch (error) {
     console.error('Historic sales cache GET all error:', error);
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -82,7 +68,6 @@ router.get('/all', async (req: Request, res: Response) => {
 /**
  * GET /api/historic-sales-cache
  * Check for cached historic sales data
- * Query params: suburb, state, postcode (optional), propertyType
  */
 router.get('/', async (req: Request, res: Response) => {
   try {
@@ -92,35 +77,37 @@ router.get('/', async (req: Request, res: Response) => {
       return res.status(400).json({ detail: 'Missing required parameters: suburb, state' });
     }
 
-    const db = await getDb();
-    const collection = db.collection<CachedHistoricSales>('historic_sales_cache');
-
-    // Create cache key from parameters
     const cacheKey = `${(suburb as string).toLowerCase()}-${(state as string).toLowerCase()}-${postcode || 'none'}-${propertyType || 'all'}`;
 
-    // Calculate cutoff date (7 days ago)
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - CACHE_DURATION_DAYS);
 
-    // Look for cached data that's less than 7 days old
-    const cached = await collection.findOne({
-      cache_key: cacheKey,
-      cached_at: { $gte: cutoffDate }
-    });
+    const cached = await queryOne<CachedHistoricSales>(
+      `SELECT * FROM historic_sales_cache WHERE cache_key = @cacheKey AND cached_at >= @cutoffDate`,
+      { cacheKey, cutoffDate }
+    );
 
     if (cached) {
+      let sales = [];
+      try {
+        sales = cached.sales ? JSON.parse(cached.sales) : [];
+      } catch { }
+
+      const parts = cacheKey.split('-');
+      const cachedSuburb = parts[0] || '';
+      const cachedState = parts[1] || '';
+
       console.log(`[Historic Sales Cache] HIT for ${cacheKey} (cached ${cached.cached_at})`);
       return res.json({
         cached: true,
         cache_key: cacheKey,
         cached_at: cached.cached_at,
-        suburb: cached.suburb,
-        state: cached.state,
+        suburb: cachedSuburb,
+        state: cachedState,
         postcode: cached.postcode,
         property_type: cached.property_type,
-        sales: cached.sales,
-        scraped_url: cached.scraped_url,
-        total: cached.total
+        sales,
+        total: sales.length
       });
     }
 
@@ -129,7 +116,6 @@ router.get('/', async (req: Request, res: Response) => {
       cached: false,
       cache_key: cacheKey
     });
-
   } catch (error) {
     console.error('Historic sales cache GET error:', error);
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -149,40 +135,47 @@ router.post('/', async (req: Request, res: Response) => {
       return res.status(400).json({ detail: 'Missing required fields: suburb, state, sales' });
     }
 
-    const db = await getDb();
-    const collection = db.collection<CachedHistoricSales>('historic_sales_cache');
-
-    // Create cache key from parameters
     const cacheKey = `${suburb.toLowerCase()}-${state.toLowerCase()}-${postcode || 'none'}-${propertyType || 'all'}`;
+    const now = new Date();
 
-    const cacheEntry: CachedHistoricSales = {
-      cache_key: cacheKey,
-      suburb: suburb.toLowerCase(),
-      state: state.toLowerCase(),
-      postcode: postcode || null,
-      property_type: propertyType || 'all',
-      sales: sales,
-      scraped_url: scrapedUrl || '',
-      cached_at: new Date(),
-      total: sales.length
-    };
-
-    // Upsert - replace existing cache entry if exists
-    await collection.updateOne(
-      { cache_key: cacheKey },
-      { $set: cacheEntry },
-      { upsert: true }
+    // Check if exists
+    const existing = await queryOne<{ cache_key: string }>(
+      `SELECT cache_key FROM historic_sales_cache WHERE cache_key = @cacheKey`,
+      { cacheKey }
     );
+
+    if (existing) {
+      await execute(
+        `UPDATE historic_sales_cache SET cached_at = @cached_at, postcode = @postcode, property_type = @property_type, sales = @sales WHERE cache_key = @cacheKey`,
+        {
+          cacheKey,
+          cached_at: now,
+          postcode: postcode || null,
+          property_type: propertyType || 'all',
+          sales: JSON.stringify(sales)
+        }
+      );
+    } else {
+      await execute(
+        `INSERT INTO historic_sales_cache (cache_key, cached_at, postcode, property_type, sales) VALUES (@cacheKey, @cached_at, @postcode, @property_type, @sales)`,
+        {
+          cacheKey,
+          cached_at: now,
+          postcode: postcode || null,
+          property_type: propertyType || 'all',
+          sales: JSON.stringify(sales)
+        }
+      );
+    }
 
     console.log(`[Historic Sales Cache] STORED ${cacheKey} with ${sales.length} properties`);
 
     return res.json({
       success: true,
       cache_key: cacheKey,
-      cached_at: cacheEntry.cached_at,
+      cached_at: now,
       total: sales.length
     });
-
   } catch (error) {
     console.error('Historic sales cache POST error:', error);
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';

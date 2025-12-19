@@ -130,21 +130,19 @@ app.get('/api/health', (req: Request, res: Response) => {
 // Admin endpoint to clear all base64 images from properties
 app.post('/api/admin/clear-images', async (req: Request, res: Response) => {
   try {
-    const { getDb } = await import('./utils/database');
-    const db = await getDb();
+    const { execute } = await import('./utils/database');
 
     // Update all properties to have empty images array
-    const result = await db.collection('properties').updateMany(
-      {},
-      { $set: { images: [] } }
+    const rowsAffected = await execute(
+      `UPDATE properties SET images = '[]'`
     );
 
-    console.log(`[Admin] Cleared images from ${result.modifiedCount} properties`);
+    console.log(`[Admin] Cleared images from ${rowsAffected} properties`);
 
     res.json({
       success: true,
-      message: `Cleared images from ${result.modifiedCount} properties`,
-      modifiedCount: result.modifiedCount
+      message: `Cleared images from ${rowsAffected} properties`,
+      modifiedCount: rowsAffected
     });
   } catch (error: any) {
     console.error('[Admin] Clear images error:', error);

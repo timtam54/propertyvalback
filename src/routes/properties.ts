@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import { getDb } from '../utils/database';
+import { getDb, queryOne, queryMany, execute, sql } from '../utils/database';
 import { extractUserEmail } from '../middleware/auth';
 import { Property, PropertyCreate } from '../models/types';
 import OpenAI from 'openai';
@@ -9,10 +9,8 @@ import multer from 'multer';
 import { extractText } from 'unpdf';
 
 async function extractPdfText(buffer: Buffer): Promise<string> {
-  // Convert Buffer to Uint8Array as required by unpdf
   const uint8Array = new Uint8Array(buffer);
   const { text } = await extractText(uint8Array);
-  // text is an array of strings (one per page), join them
   if (Array.isArray(text)) {
     return text.join('\n');
   }
@@ -21,7 +19,7 @@ async function extractPdfText(buffer: Buffer): Promise<string> {
 
 const router = Router();
 
-// Lazy-initialize OpenAI to avoid startup errors if API key is missing
+// Lazy-initialize OpenAI
 let openai: OpenAI | null = null;
 function getOpenAI(): OpenAI {
   if (!openai) {
@@ -36,7 +34,7 @@ function getOpenAI(): OpenAI {
 // Configure multer for file uploads
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (file.mimetype === 'application/pdf') {
       cb(null, true);
@@ -49,52 +47,54 @@ const upload = multer({
 // Use extractUserEmail middleware for all routes
 router.use(extractUserEmail);
 
-// GET /api/properties/sold/list - Get all sold properties
+// GET /api/properties/sold/list
 router.get('/sold/list', async (req: Request, res: Response) => {
   try {
-    const db = await getDb();
     const { suburb } = req.query;
 
-    const query: any = { status: 'sold' };
+    let query = `SELECT * FROM properties WHERE status = 'sold'`;
+    const params: Record<string, any> = {};
 
-    // If suburb filter provided, match on location containing the suburb
     if (suburb && typeof suburb === 'string') {
-      query.location = { $regex: suburb, $options: 'i' };
+      query += ` AND location LIKE @suburb`;
+      params.suburb = `%${suburb}%`;
     }
 
-    const properties = await db
-      .collection<Property>('properties')
-      .find(query, { projection: { _id: 0 } })
-      .sort({ sale_date: -1 })
-      .toArray();
+    query += ` ORDER BY sale_date DESC`;
 
-    res.json({ success: true, properties });
+    const properties = await queryMany<Property>(query, params);
+
+    // Parse JSON fields
+    const parsed = properties.map(p => ({
+      ...p,
+      images: p.images ? JSON.parse(p.images as any) : [],
+      tags: p.tags ? JSON.parse(p.tags as any) : null,
+      comparables_data: p.comparables_data ? JSON.parse(p.comparables_data as any) : null,
+      confidence_scoring: p.confidence_scoring ? JSON.parse(p.confidence_scoring as any) : null,
+      valuation_history: p.valuation_history ? JSON.parse(p.valuation_history as any) : null
+    }));
+
+    res.json({ success: true, properties: parsed });
   } catch (error) {
     console.error('Get sold properties error:', error);
     res.status(500).json({ detail: 'Failed to fetch sold properties' });
   }
 });
 
-// GET /api/properties/sold/suburbs - Get unique suburbs from sold properties
+// GET /api/properties/sold/suburbs
 router.get('/sold/suburbs', async (req: Request, res: Response) => {
   try {
-    const db = await getDb();
+    const properties = await queryMany<{ location: string }>(
+      `SELECT DISTINCT location FROM properties WHERE status = 'sold'`
+    );
 
-    const properties = await db
-      .collection<Property>('properties')
-      .find({ status: 'sold' }, { projection: { location: 1, _id: 0 } })
-      .toArray();
-
-    // Extract suburbs from locations (assuming format like "123 Street, Suburb, State")
     const suburbs = new Set<string>();
     properties.forEach(p => {
       if (p.location) {
         const parts = p.location.split(',').map(s => s.trim());
-        // Usually suburb is the second-to-last or second part
         if (parts.length >= 2) {
-          // Try to get suburb - usually after street address
           const suburb = parts.length >= 3 ? parts[parts.length - 2] : parts[1];
-          if (suburb && !suburb.match(/^\d/)) { // Skip if starts with number
+          if (suburb && !suburb.match(/^\d/)) {
             suburbs.add(suburb);
           }
         }
@@ -108,21 +108,17 @@ router.get('/sold/suburbs', async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/properties/:propertyId/resell - Move sold property back to active
+// POST /api/properties/:propertyId/resell
 router.post('/:propertyId/resell', async (req: Request, res: Response) => {
   try {
     const { propertyId } = req.params;
-    const db = await getDb();
 
-    const result = await db.collection<Property>('properties').updateOne(
-      { id: propertyId },
-      {
-        $set: { status: 'active' },
-        $unset: { sold_price: '', sale_date: '' }
-      }
+    const rowsAffected = await execute(
+      `UPDATE properties SET status = 'active', sold_price = NULL, sale_date = NULL WHERE id = @id`,
+      { id: propertyId }
     );
 
-    if (result.matchedCount === 0) {
+    if (rowsAffected === 0) {
       res.status(404).json({ detail: 'Property not found' });
       return;
     }
@@ -140,71 +136,52 @@ router.post('/', async (req: Request, res: Response) => {
     const propertyData = req.body as PropertyCreate;
     const userEmail = req.userEmail;
 
-    const property: Property = {
-      id: uuidv4(),
-      beds: propertyData.beds,
-      baths: propertyData.baths,
-      carpark: propertyData.carpark,
-      location: propertyData.location,
-      price: propertyData.price || null,
-      size: propertyData.size || null,
-      property_type: propertyData.property_type || null,
-      features: propertyData.features || null,
-      strata_body_corps: propertyData.strata_body_corps || null,
-      council_rates: propertyData.council_rates || null,
-      images: propertyData.images || [],
-      pitch: null,
-      agent1_name: propertyData.agent1_name || null,
-      agent1_phone: propertyData.agent1_phone || null,
-      agent2_name: propertyData.agent2_name || null,
-      agent2_phone: propertyData.agent2_phone || null,
-      agent_email: propertyData.agent_email || null,
-      evaluation_report: null,
-      evaluation_date: null,
-      improvements_detected: null,
-      evaluation_ad: null,
-      pricing_type: null,
-      price_upper: null,
-      marketing_strategy: null,
-      marketing_package: null,
-      marketing_cost: null,
-      marketing_report: null,
-      marketing_report_date: null,
-      rp_data_report: null,
-      rp_data_upload_date: null,
-      rp_data_filename: null,
-      agent_id: null,
-      agent_name: null,
-      agency_id: 'default_agency',
-      user_email: userEmail || propertyData.user_email || null,
-      created_at: new Date()
-    };
+    const propertyId = uuidv4();
+    const now = new Date();
 
-    // Check document size (MongoDB has 16MB limit)
-    const docString = JSON.stringify(property);
-    const docSize = Buffer.byteLength(docString, 'utf8');
-    const maxSize = 15 * 1024 * 1024; // 15MB to be safe
+    await execute(
+      `INSERT INTO properties (id, beds, baths, carpark, location, price, size, property_type, features,
+        strata_body_corps, council_rates, images, agent1_name, agent1_phone, agent2_name, agent2_phone,
+        agent_email, agency_id, user_email, created_at, status)
+       VALUES (@id, @beds, @baths, @carpark, @location, @price, @size, @property_type, @features,
+        @strata_body_corps, @council_rates, @images, @agent1_name, @agent1_phone, @agent2_name, @agent2_phone,
+        @agent_email, @agency_id, @user_email, @created_at, 'active')`,
+      {
+        id: propertyId,
+        beds: propertyData.beds || null,
+        baths: propertyData.baths || null,
+        carpark: propertyData.carpark || null,
+        location: propertyData.location || null,
+        price: propertyData.price || null,
+        size: propertyData.size || null,
+        property_type: propertyData.property_type || null,
+        features: propertyData.features || null,
+        strata_body_corps: propertyData.strata_body_corps || null,
+        council_rates: propertyData.council_rates || null,
+        images: JSON.stringify(propertyData.images || []),
+        agent1_name: propertyData.agent1_name || null,
+        agent1_phone: propertyData.agent1_phone || null,
+        agent2_name: propertyData.agent2_name || null,
+        agent2_phone: propertyData.agent2_phone || null,
+        agent_email: propertyData.agent_email || null,
+        agency_id: 'default_agency',
+        user_email: userEmail || propertyData.user_email || null,
+        created_at: now
+      }
+    );
 
-    if (docSize > maxSize) {
-      const numImages = property.images.length;
-      res.status(413).json({
-        detail: `Property data too large (${(docSize / 1024 / 1024).toFixed(1)}MB). Limit is 15MB. You have ${numImages} images. Please reduce to maximum 10-15 images.`
-      });
-      return;
+    const property = await queryOne<Property>(
+      'SELECT * FROM properties WHERE id = @id',
+      { id: propertyId }
+    );
+
+    if (property) {
+      property.images = property.images ? JSON.parse(property.images as any) : [];
     }
-
-    const db = await getDb();
-    await db.collection<Property>('properties').insertOne(property);
 
     res.status(201).json(property);
   } catch (error: any) {
     console.error('Create property error:', error);
-    if (error.message?.includes('DocumentTooLarge')) {
-      res.status(413).json({
-        detail: 'Failed to create property: Too many images. Please reduce to maximum 10-15 images.'
-      });
-      return;
-    }
     res.status(500).json({ detail: 'Failed to create property' });
   }
 });
@@ -213,37 +190,37 @@ router.post('/', async (req: Request, res: Response) => {
 router.get('/', async (req: Request, res: Response) => {
   try {
     const userEmail = req.userEmail;
-    const db = await getDb();
 
-    // Build query based on user email filter
-    // If user is logged in, show their properties AND properties without user_email (legacy)
-    let query: any = {};
+    let query: string;
+    const params: Record<string, any> = {};
 
     if (userEmail) {
-      query = {
-        $or: [
-          { user_email: userEmail },
-          { user_email: null },
-          { user_email: { $exists: false } }
-        ]
-      };
+      query = `SELECT * FROM properties WHERE user_email = @userEmail OR user_email IS NULL`;
+      params.userEmail = userEmail;
+    } else {
+      query = `SELECT * FROM properties`;
     }
 
-    const properties = await db
-      .collection<Property>('properties')
-      .find(query, { projection: { _id: 0 } })
-      .limit(1000)
-      .toArray();
+    const properties = await queryMany<Property>(query, params);
 
-    res.json(properties);
+    // Parse JSON fields
+    const parsed = properties.map(p => ({
+      ...p,
+      images: p.images ? JSON.parse(p.images as any) : [],
+      tags: p.tags ? JSON.parse(p.tags as any) : null,
+      comparables_data: p.comparables_data ? JSON.parse(p.comparables_data as any) : null,
+      confidence_scoring: p.confidence_scoring ? JSON.parse(p.confidence_scoring as any) : null,
+      valuation_history: p.valuation_history ? JSON.parse(p.valuation_history as any) : null
+    }));
+
+    res.json(parsed);
   } catch (error) {
     console.error('Get properties error:', error);
     res.status(500).json({ detail: 'Failed to get properties' });
   }
 });
 
-// POST /api/properties/extract-pdf-text - Extract text from a PDF without saving to a property
-// IMPORTANT: This route must be defined BEFORE /:propertyId routes to avoid matching "extract-pdf-text" as a propertyId
+// POST /api/properties/extract-pdf-text
 router.post('/extract-pdf-text', upload.single('file'), async (req: Request, res: Response) => {
   try {
     if (!req.file) {
@@ -251,18 +228,17 @@ router.post('/extract-pdf-text', upload.single('file'), async (req: Request, res
       return;
     }
 
-    // Parse PDF content using unpdf
     let pdfText = '';
     try {
       pdfText = await extractPdfText(req.file.buffer);
     } catch (parseError) {
       console.error('PDF parsing error:', parseError);
-      res.status(400).json({ detail: 'Could not extract text from PDF. The PDF may be image-based. Please try pasting the text instead.' });
+      res.status(400).json({ detail: 'Could not extract text from PDF.' });
       return;
     }
 
     if (!pdfText || pdfText.trim() === '') {
-      res.status(400).json({ detail: 'Could not extract text from PDF. The PDF may be image-based. Please try pasting the text instead.' });
+      res.status(400).json({ detail: 'Could not extract text from PDF.' });
       return;
     }
 
@@ -279,23 +255,28 @@ router.get('/:propertyId', async (req: Request, res: Response) => {
     const { propertyId } = req.params;
     const userEmail = req.userEmail;
 
-    const db = await getDb();
-
-    // First get the property
-    const property = await db
-      .collection<Property>('properties')
-      .findOne({ id: propertyId }, { projection: { _id: 0 } });
+    const property = await queryOne<Property>(
+      'SELECT * FROM properties WHERE id = @id',
+      { id: propertyId }
+    );
 
     if (!property) {
       res.status(404).json({ detail: 'Property not found' });
       return;
     }
 
-    // Check ownership: allow access if user owns it, or if it's a legacy property (no user_email)
+    // Check ownership
     if (userEmail && property.user_email && property.user_email !== userEmail) {
       res.status(403).json({ detail: 'Access denied: You can only view your own properties' });
       return;
     }
+
+    // Parse JSON fields
+    property.images = property.images ? JSON.parse(property.images as any) : [];
+    property.tags = property.tags ? JSON.parse(property.tags as any) : null;
+    property.comparables_data = property.comparables_data ? JSON.parse(property.comparables_data as any) : null;
+    property.confidence_scoring = property.confidence_scoring ? JSON.parse(property.confidence_scoring as any) : null;
+    property.valuation_history = property.valuation_history ? JSON.parse(property.valuation_history as any) : null;
 
     res.json(property);
   } catch (error) {
@@ -311,107 +292,116 @@ router.put('/:propertyId', async (req: Request, res: Response) => {
     const userEmail = req.userEmail;
     const updateData = req.body as PropertyCreate;
 
-    const db = await getDb();
-
-    // First get the property
-    const property = await db
-      .collection<Property>('properties')
-      .findOne({ id: propertyId }, { projection: { _id: 0 } });
+    const property = await queryOne<Property>(
+      'SELECT * FROM properties WHERE id = @id',
+      { id: propertyId }
+    );
 
     if (!property) {
       res.status(404).json({ detail: 'Property not found' });
       return;
     }
 
-    // Check ownership: allow update if user owns it, or if it's a legacy property (no user_email)
     if (userEmail && property.user_email && property.user_email !== userEmail) {
-      res.status(403).json({ detail: 'Access denied: You can only update your own properties' });
+      res.status(403).json({ detail: 'Access denied' });
       return;
     }
 
-    // Check document size
-    const docString = JSON.stringify(updateData);
-    const docSize = Buffer.byteLength(docString, 'utf8');
-    const maxSize = 15 * 1024 * 1024;
-
-    if (docSize > maxSize) {
-      const numImages = updateData.images?.length || 0;
-      res.status(413).json({
-        detail: `Property data too large (${(docSize / 1024 / 1024).toFixed(1)}MB). Limit is 15MB. You have ${numImages} images. Please reduce to maximum 10-15 images.`
-      });
-      return;
-    }
-
-    // If the property doesn't have a user_email, set it to the current user
-    if (!property.user_email && updateData.user_email) {
-      // user_email is already in updateData, it will be set
-    } else if (property.user_email && updateData.user_email) {
-      // Don't overwrite existing user_email
-      delete updateData.user_email;
-    }
-
-    await db.collection<Property>('properties').updateOne(
-      { id: propertyId },
-      { $set: updateData }
+    await execute(
+      `UPDATE properties SET
+        beds = @beds, baths = @baths, carpark = @carpark, location = @location,
+        price = @price, size = @size, property_type = @property_type, features = @features,
+        strata_body_corps = @strata_body_corps, council_rates = @council_rates, images = @images,
+        agent1_name = @agent1_name, agent1_phone = @agent1_phone, agent2_name = @agent2_name,
+        agent2_phone = @agent2_phone, agent_email = @agent_email
+       WHERE id = @id`,
+      {
+        id: propertyId,
+        beds: updateData.beds ?? property.beds,
+        baths: updateData.baths ?? property.baths,
+        carpark: updateData.carpark ?? property.carpark,
+        location: updateData.location ?? property.location,
+        price: updateData.price ?? property.price,
+        size: updateData.size ?? property.size,
+        property_type: updateData.property_type ?? property.property_type,
+        features: updateData.features ?? property.features,
+        strata_body_corps: updateData.strata_body_corps ?? property.strata_body_corps,
+        council_rates: updateData.council_rates ?? property.council_rates,
+        images: updateData.images ? JSON.stringify(updateData.images) : property.images,
+        agent1_name: updateData.agent1_name ?? property.agent1_name,
+        agent1_phone: updateData.agent1_phone ?? property.agent1_phone,
+        agent2_name: updateData.agent2_name ?? property.agent2_name,
+        agent2_phone: updateData.agent2_phone ?? property.agent2_phone,
+        agent_email: updateData.agent_email ?? property.agent_email
+      }
     );
 
-    // Get updated property
-    const updatedProperty = await db
-      .collection<Property>('properties')
-      .findOne({ id: propertyId }, { projection: { _id: 0 } });
+    const updated = await queryOne<Property>(
+      'SELECT * FROM properties WHERE id = @id',
+      { id: propertyId }
+    );
 
-    res.json(updatedProperty);
+    if (updated) {
+      updated.images = updated.images ? JSON.parse(updated.images as any) : [];
+    }
+
+    res.json(updated);
   } catch (error: any) {
     console.error('Update property error:', error);
-    if (error.message?.includes('DocumentTooLarge')) {
-      res.status(413).json({
-        detail: 'Property update failed: Too many images. Please reduce to maximum 10-15 images.'
-      });
-      return;
-    }
     res.status(500).json({ detail: 'Failed to update property' });
   }
 });
 
-// PATCH /api/properties/:propertyId - Partial update (for lat/lng, etc.)
+// PATCH /api/properties/:propertyId
 router.patch('/:propertyId', async (req: Request, res: Response) => {
   try {
     const { propertyId } = req.params;
     const updateData = req.body;
 
-    // Only allow specific fields to be patched
     const allowedFields = ['latitude', 'longitude', 'status', 'is_favourite', 'tags'];
-    const filteredData: Record<string, any> = {};
+    const updates: string[] = [];
+    const params: Record<string, any> = { id: propertyId };
 
     for (const key of Object.keys(updateData)) {
       if (allowedFields.includes(key)) {
-        filteredData[key] = updateData[key];
+        if (key === 'tags') {
+          updates.push(`${key} = @${key}`);
+          params[key] = JSON.stringify(updateData[key]);
+        } else if (key === 'is_favourite') {
+          updates.push(`${key} = @${key}`);
+          params[key] = updateData[key] ? 1 : 0;
+        } else {
+          updates.push(`${key} = @${key}`);
+          params[key] = updateData[key];
+        }
       }
     }
 
-    if (Object.keys(filteredData).length === 0) {
+    if (updates.length === 0) {
       res.status(400).json({ detail: 'No valid fields to update' });
       return;
     }
 
-    const db = await getDb();
-
-    const result = await db.collection<Property>('properties').updateOne(
-      { id: propertyId },
-      { $set: filteredData }
+    const rowsAffected = await execute(
+      `UPDATE properties SET ${updates.join(', ')} WHERE id = @id`,
+      params
     );
 
-    if (result.matchedCount === 0) {
+    if (rowsAffected === 0) {
       res.status(404).json({ detail: 'Property not found' });
       return;
     }
 
-    // Get updated property
-    const updatedProperty = await db
-      .collection<Property>('properties')
-      .findOne({ id: propertyId }, { projection: { _id: 0 } });
+    const updated = await queryOne<Property>(
+      'SELECT * FROM properties WHERE id = @id',
+      { id: propertyId }
+    );
 
-    res.json(updatedProperty);
+    if (updated) {
+      updated.images = updated.images ? JSON.parse(updated.images as any) : [];
+    }
+
+    res.json(updated);
   } catch (error: any) {
     console.error('Patch property error:', error);
     res.status(500).json({ detail: 'Failed to patch property' });
@@ -424,30 +414,22 @@ router.delete('/:propertyId', async (req: Request, res: Response) => {
     const { propertyId } = req.params;
     const userEmail = req.userEmail;
 
-    const db = await getDb();
-
-    // First get the property
-    const property = await db
-      .collection<Property>('properties')
-      .findOne({ id: propertyId }, { projection: { _id: 0 } });
+    const property = await queryOne<Property>(
+      'SELECT * FROM properties WHERE id = @id',
+      { id: propertyId }
+    );
 
     if (!property) {
       res.status(404).json({ detail: 'Property not found' });
       return;
     }
 
-    // Check ownership: allow delete if user owns it, or if it's a legacy property (no user_email)
     if (userEmail && property.user_email && property.user_email !== userEmail) {
-      res.status(403).json({ detail: 'Access denied: You can only delete your own properties' });
+      res.status(403).json({ detail: 'Access denied' });
       return;
     }
 
-    const result = await db.collection<Property>('properties').deleteOne({ id: propertyId });
-
-    if (result.deletedCount === 0) {
-      res.status(404).json({ detail: 'Property not found' });
-      return;
-    }
+    await execute('DELETE FROM properties WHERE id = @id', { id: propertyId });
 
     res.json({ success: true, message: 'Property deleted successfully' });
   } catch (error) {
@@ -460,109 +442,11 @@ router.delete('/:propertyId', async (req: Request, res: Response) => {
 router.post('/:propertyId/generate-pitch', async (req: Request, res: Response) => {
   try {
     const { propertyId } = req.params;
-    const db = await getDb();
 
-    const property = await db
-      .collection<Property>('properties')
-      .findOne({ id: propertyId }, { projection: { _id: 0 } });
-
-    if (!property) {
-      res.status(404).json({ detail: 'Property not found' });
-      return;
-    }
-
-    // Build property description for OpenAI
-    const propertyDesc = `
-      Location: ${property.location}
-      Property Type: ${property.property_type || 'Residential'}
-      Bedrooms: ${property.beds}
-      Bathrooms: ${property.baths}
-      Car Parks: ${property.carpark}
-      Size: ${property.size ? property.size + ' sqm' : 'Not specified'}
-      Price: ${property.price ? '$' + property.price.toLocaleString() : 'Contact agent'}
-      Features: ${property.features || 'Modern property with great potential'}
-      ${property.rp_data_report ? 'Market Data: ' + property.rp_data_report.substring(0, 500) : ''}
-    `;
-
-    const completion = await getOpenAI().chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [
-        {
-          role: 'system',
-          content: `You are an expert Australian real estate copywriter specializing in premium property marketing. Create compelling, sophisticated property descriptions that:
-- Use evocative, descriptive language that paints a picture of the lifestyle
-- Highlight unique architectural features, views, and premium finishes
-- Emphasize location benefits (proximity to beaches, cafes, transport, schools)
-- Include specific details about room layouts, storage, and practical features
-- Appeal to the target buyer demographic (professionals, families, downsizers, investors)
-- Use flowing, elegant prose without bullet points
-- Create a sense of exclusivity and desirability
-- Write 2-3 substantial paragraphs that read like premium marketing copy
-- Reference local landmarks, suburbs, and lifestyle benefits specific to the area`
-        },
-        {
-          role: 'user',
-          content: `Write a professional, sophisticated selling pitch for this Australian property. Make it read like high-end real estate marketing copy:\n${propertyDesc}`
-        }
-      ],
-      max_tokens: 700,
-      temperature: 0.7
-    });
-
-    const pitch = completion.choices[0]?.message?.content || 'Unable to generate pitch';
-
-    // Update property with new pitch
-    await db.collection<Property>('properties').updateOne(
-      { id: propertyId },
-      { $set: { pitch } }
+    const property = await queryOne<Property>(
+      'SELECT * FROM properties WHERE id = @id',
+      { id: propertyId }
     );
-
-    res.json({ pitch, success: true });
-  } catch (error: any) {
-    console.error('Generate pitch error:', error);
-    res.status(500).json({ detail: 'Failed to generate pitch' });
-  }
-});
-
-// PUT /api/properties/:propertyId/update-pitch
-router.put('/:propertyId/update-pitch', async (req: Request, res: Response) => {
-  try {
-    const { propertyId } = req.params;
-    const { pitch } = req.body;
-
-    if (!pitch || typeof pitch !== 'string') {
-      res.status(400).json({ detail: 'Pitch is required' });
-      return;
-    }
-
-    const db = await getDb();
-
-    const result = await db.collection<Property>('properties').updateOne(
-      { id: propertyId },
-      { $set: { pitch } }
-    );
-
-    if (result.matchedCount === 0) {
-      res.status(404).json({ detail: 'Property not found' });
-      return;
-    }
-
-    res.json({ success: true, pitch });
-  } catch (error) {
-    console.error('Update pitch error:', error);
-    res.status(500).json({ detail: 'Failed to update pitch' });
-  }
-});
-
-// POST /api/properties/:propertyId/generate-facebook-ad
-router.post('/:propertyId/generate-facebook-ad', async (req: Request, res: Response) => {
-  try {
-    const { propertyId } = req.params;
-    const db = await getDb();
-
-    const property = await db
-      .collection<Property>('properties')
-      .findOne({ id: propertyId }, { projection: { _id: 0 } });
 
     if (!property) {
       res.status(404).json({ detail: 'Property not found' });
@@ -585,88 +469,56 @@ router.post('/:propertyId/generate-facebook-ad', async (req: Request, res: Respo
       messages: [
         {
           role: 'system',
-          content: 'You are an expert Facebook ads copywriter for Australian real estate. Create compelling ad copy that drives clicks and inquiries. Return a JSON object with: headline (max 40 chars), primary_text (engaging hook, max 125 chars), description (key benefits, max 30 chars), call_to_action (one of: LEARN_MORE, BOOK_NOW, CONTACT_US, GET_QUOTE)'
+          content: `You are an expert Australian real estate copywriter. Create compelling property descriptions.`
         },
         {
           role: 'user',
-          content: `Create Facebook ad copy for this property:\n${propertyDesc}\n\nReturn only valid JSON.`
+          content: `Write a professional selling pitch for this property:\n${propertyDesc}`
         }
       ],
-      max_tokens: 300,
+      max_tokens: 700,
       temperature: 0.7
     });
 
-    let adCopy;
-    try {
-      const content = completion.choices[0]?.message?.content || '{}';
-      // Remove markdown code blocks if present
-      const cleanedContent = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      adCopy = JSON.parse(cleanedContent);
-    } catch {
-      adCopy = {
-        headline: `${property.beds} Bed Home in ${property.location.split(',')[0]}`,
-        primary_text: `Don't miss this stunning ${property.beds} bedroom property! Perfect for families.`,
-        description: 'Inquire today',
-        call_to_action: 'LEARN_MORE'
-      };
-    }
+    const pitch = completion.choices[0]?.message?.content || 'Unable to generate pitch';
 
-    res.json({ ad_copy: adCopy, success: true });
+    await execute(
+      'UPDATE properties SET pitch = @pitch WHERE id = @id',
+      { pitch, id: propertyId }
+    );
+
+    res.json({ pitch, success: true });
   } catch (error: any) {
-    console.error('Generate Facebook ad error:', error);
-    res.status(500).json({ detail: 'Failed to generate Facebook ad' });
+    console.error('Generate pitch error:', error);
+    res.status(500).json({ detail: 'Failed to generate pitch' });
   }
 });
 
-// POST /api/properties/:propertyId/generate-facebook-post
-router.post('/:propertyId/generate-facebook-post', async (req: Request, res: Response) => {
+// PUT /api/properties/:propertyId/update-pitch
+router.put('/:propertyId/update-pitch', async (req: Request, res: Response) => {
   try {
     const { propertyId } = req.params;
-    const db = await getDb();
+    const { pitch } = req.body;
 
-    const property = await db
-      .collection<Property>('properties')
-      .findOne({ id: propertyId }, { projection: { _id: 0 } });
+    if (!pitch || typeof pitch !== 'string') {
+      res.status(400).json({ detail: 'Pitch is required' });
+      return;
+    }
 
-    if (!property) {
+    const rowsAffected = await execute(
+      'UPDATE properties SET pitch = @pitch WHERE id = @id',
+      { pitch, id: propertyId }
+    );
+
+    if (rowsAffected === 0) {
       res.status(404).json({ detail: 'Property not found' });
       return;
     }
 
-    const propertyDesc = `
-      Location: ${property.location}
-      Property Type: ${property.property_type || 'Residential'}
-      Bedrooms: ${property.beds}
-      Bathrooms: ${property.baths}
-      Car Parks: ${property.carpark}
-      Size: ${property.size ? property.size + ' sqm' : 'Not specified'}
-      Price: ${property.price ? '$' + property.price.toLocaleString() : 'Contact agent'}
-      Features: ${property.features || 'Modern property with great potential'}
-      Agent: ${property.agent1_name || 'Your Local Agent'}
-    `;
-
-    const completion = await getOpenAI().chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [
-        {
-          role: 'system',
-          content: 'You are an expert social media manager for Australian real estate. Create engaging Facebook posts that generate interest and shares. Include relevant emojis, property highlights, and a clear call to action. Format for readability with line breaks.'
-        },
-        {
-          role: 'user',
-          content: `Create an engaging Facebook post for this property listing:\n${propertyDesc}`
-        }
-      ],
-      max_tokens: 400,
-      temperature: 0.7
-    });
-
-    const postContent = completion.choices[0]?.message?.content || 'Unable to generate post';
-
-    res.json({ post_content: postContent, success: true });
-  } catch (error: any) {
-    console.error('Generate Facebook post error:', error);
-    res.status(500).json({ detail: 'Failed to generate Facebook post' });
+    res.json({ success: true, pitch });
+  } catch (error) {
+    console.error('Update pitch error:', error);
+    res.status(500).json({ detail: 'Failed to update pitch' });
   }
 });
 
@@ -681,19 +533,12 @@ router.put('/:propertyId/update-rp-data', async (req: Request, res: Response) =>
       return;
     }
 
-    const db = await getDb();
-
-    const result = await db.collection<Property>('properties').updateOne(
-      { id: propertyId },
-      {
-        $set: {
-          rp_data_report: report,
-          rp_data_upload_date: new Date().toISOString()
-        }
-      }
+    const rowsAffected = await execute(
+      `UPDATE properties SET rp_data_report = @report, rp_data_upload_date = @upload_date WHERE id = @id`,
+      { report, upload_date: new Date(), id: propertyId }
     );
 
-    if (result.matchedCount === 0) {
+    if (rowsAffected === 0) {
       res.status(404).json({ detail: 'Property not found' });
       return;
     }
@@ -702,134 +547,6 @@ router.put('/:propertyId/update-rp-data', async (req: Request, res: Response) =>
   } catch (error) {
     console.error('Update RP data error:', error);
     res.status(500).json({ detail: 'Failed to update RP data' });
-  }
-});
-
-// POST /api/properties/:propertyId/upload-rp-data-pdf
-router.post('/:propertyId/upload-rp-data-pdf', upload.single('file'), async (req: Request, res: Response) => {
-  try {
-    const { propertyId } = req.params;
-
-    if (!req.file) {
-      res.status(400).json({ detail: 'PDF file is required' });
-      return;
-    }
-
-    // Parse PDF content using unpdf
-    let pdfText = '';
-    try {
-      pdfText = await extractPdfText(req.file.buffer);
-    } catch (pdfError) {
-      console.error('PDF parsing error:', pdfError);
-      res.status(400).json({ detail: 'Failed to parse PDF file. Please try pasting the text instead.' });
-      return;
-    }
-
-    if (!pdfText || pdfText.trim().length === 0) {
-      res.status(400).json({ detail: 'Could not extract text from PDF. The PDF may be image-based. Please try pasting the text instead.' });
-      return;
-    }
-
-    const db = await getDb();
-
-    const result = await db.collection<Property>('properties').updateOne(
-      { id: propertyId },
-      {
-        $set: {
-          rp_data_report: pdfText,
-          rp_data_upload_date: new Date().toISOString(),
-          rp_data_filename: req.file.originalname
-        }
-      }
-    );
-
-    if (result.matchedCount === 0) {
-      res.status(404).json({ detail: 'Property not found' });
-      return;
-    }
-
-    res.json({ success: true, filename: req.file.originalname });
-  } catch (error) {
-    console.error('Upload RP data PDF error:', error);
-    res.status(500).json({ detail: 'Failed to upload PDF' });
-  }
-});
-
-// PUT /api/properties/:propertyId/update-additional-report
-router.put('/:propertyId/update-additional-report', async (req: Request, res: Response) => {
-  try {
-    const { propertyId } = req.params;
-    const { report } = req.body;
-
-    if (!report || typeof report !== 'string') {
-      res.status(400).json({ detail: 'Report content is required' });
-      return;
-    }
-
-    const db = await getDb();
-
-    const result = await db.collection<Property>('properties').updateOne(
-      { id: propertyId },
-      { $set: { additional_report: report } }
-    );
-
-    if (result.matchedCount === 0) {
-      res.status(404).json({ detail: 'Property not found' });
-      return;
-    }
-
-    res.json({ success: true });
-  } catch (error) {
-    console.error('Update additional report error:', error);
-    res.status(500).json({ detail: 'Failed to update additional report' });
-  }
-});
-
-// POST /api/properties/:propertyId/upload-additional-report-pdf
-router.post('/:propertyId/upload-additional-report-pdf', upload.single('file'), async (req: Request, res: Response) => {
-  try {
-    const { propertyId } = req.params;
-
-    if (!req.file) {
-      res.status(400).json({ detail: 'PDF file is required' });
-      return;
-    }
-
-    // Parse PDF content using unpdf
-    let pdfText = '';
-    try {
-      pdfText = await extractPdfText(req.file.buffer);
-    } catch (pdfError) {
-      console.error('PDF parsing error:', pdfError);
-      res.status(400).json({ detail: 'Failed to parse PDF file. Please try pasting the text instead.' });
-      return;
-    }
-
-    if (!pdfText || pdfText.trim().length === 0) {
-      res.status(400).json({ detail: 'Could not extract text from PDF. The PDF may be image-based. Please try pasting the text instead.' });
-      return;
-    }
-
-    const db = await getDb();
-
-    const result = await db.collection<Property>('properties').updateOne(
-      { id: propertyId },
-      {
-        $set: {
-          additional_report: pdfText
-        }
-      }
-    );
-
-    if (result.matchedCount === 0) {
-      res.status(404).json({ detail: 'Property not found' });
-      return;
-    }
-
-    res.json({ success: true, filename: req.file.originalname });
-  } catch (error) {
-    console.error('Upload additional report PDF error:', error);
-    res.status(500).json({ detail: 'Failed to upload PDF' });
   }
 });
 
@@ -844,20 +561,16 @@ router.post('/:propertyId/mark-sold', async (req: Request, res: Response) => {
       return;
     }
 
-    const db = await getDb();
-
-    const result = await db.collection<Property>('properties').updateOne(
-      { id: propertyId },
+    const rowsAffected = await execute(
+      `UPDATE properties SET status = 'sold', sold_price = @sold_price, sale_date = @sale_date WHERE id = @id`,
       {
-        $set: {
-          status: 'sold',
-          sold_price,
-          sale_date: sale_date || new Date().toISOString().split('T')[0]
-        }
+        sold_price,
+        sale_date: sale_date || new Date().toISOString().split('T')[0],
+        id: propertyId
       }
     );
 
-    if (result.matchedCount === 0) {
+    if (rowsAffected === 0) {
       res.status(404).json({ detail: 'Property not found' });
       return;
     }
@@ -869,192 +582,7 @@ router.post('/:propertyId/mark-sold', async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/properties/:propertyId/evaluate - Property Valuation using AI + Domain API
-router.post('/:propertyId/evaluate', async (req: Request, res: Response) => {
-  try {
-    const { propertyId } = req.params;
-    const db = await getDb();
-
-    const property = await db
-      .collection<Property>('properties')
-      .findOne({ id: propertyId }, { projection: { _id: 0 } });
-
-    if (!property) {
-      res.status(404).json({ detail: 'Property not found' });
-      return;
-    }
-
-    // Get Domain API key from environment
-    const domainApiKey = process.env.DOMAIN_API_KEY || null;
-    const maskedKey = domainApiKey
-      ? `${domainApiKey.substring(0, 8)}****${domainApiKey.substring(domainApiKey.length - 4)}`
-      : 'NOT SET';
-
-    console.log(`[Evaluate] Domain API Key: ${maskedKey}`);
-
-    // Get comparable properties from Domain API
-    let comparablesData: any = {
-      comparable_sold: [],
-      statistics: { total_found: 0, price_range: {} },
-      data_source: 'AI Knowledge',
-      domain_api_key_used: maskedKey,
-      domain_api_error: null
-    };
-
-    if (domainApiKey) {
-      try {
-        console.log(`[Evaluate] Calling Domain API for ${property.location}`);
-        const domainData = await getComparableProperties(
-          domainApiKey,
-          property.location,
-          property.beds || 3,
-          property.baths || 2,
-          property.property_type || 'House'
-        );
-
-        if (domainData.statistics.total_found > 0) {
-          comparablesData = {
-            ...domainData,
-            data_source: 'Domain.com.au API',
-            domain_api_key_used: maskedKey,
-            domain_api_error: null
-          };
-          console.log(`[Evaluate] Domain API returned ${domainData.statistics.total_found} comparables`);
-        } else {
-          console.log(`[Evaluate] Domain API returned no results`);
-          comparablesData.domain_api_error = 'No comparable properties found';
-        }
-      } catch (domainError: any) {
-        console.error(`[Evaluate] Domain API error: ${domainError.message}`);
-        comparablesData.domain_api_error = domainError.message;
-      }
-    } else {
-      console.log(`[Evaluate] No Domain API key set`);
-      comparablesData.domain_api_error = 'Domain API key not configured';
-    }
-
-    // Build property description for evaluation
-    const propertyDesc = `
-      Location: ${property.location}
-      Property Type: ${property.property_type || 'Residential'}
-      Bedrooms: ${property.beds}
-      Bathrooms: ${property.baths}
-      Car Parks: ${property.carpark}
-      Size: ${property.size ? property.size + ' sqm' : 'Not specified'}
-      Current List Price: ${property.price ? '$' + property.price.toLocaleString() : 'Not set'}
-      Features: ${property.features || 'Standard property'}
-      ${property.rp_data_report ? 'RP Data/Market Report:\n' + property.rp_data_report.substring(0, 2000) : ''}
-    `;
-
-    // Add comparables to the prompt if available
-    let comparablesText = '';
-    if (comparablesData.comparable_sold?.length > 0) {
-      comparablesText = '\n\nCOMPARABLE SOLD PROPERTIES FROM DOMAIN:\n';
-      for (const comp of comparablesData.comparable_sold.slice(0, 5)) {
-        comparablesText += `- ${comp.address}: $${comp.price?.toLocaleString() || 'N/A'} | ${comp.beds || 'N/A'} bed, ${comp.baths || 'N/A'} bath\n`;
-      }
-    }
-
-    // First, analyze images for improvements if available
-    let improvementsDetected = '';
-    if (property.images && property.images.length > 0) {
-      try {
-        const imageAnalysis = await getOpenAI().chat.completions.create({
-          model: 'gpt-4o-mini',
-          messages: [
-            {
-              role: 'system',
-              content: `You are an expert property appraiser. List likely improvements and their estimated value impact.`
-            },
-            {
-              role: 'user',
-              content: `Based on a ${property.beds} bed, ${property.baths} bath property in ${property.location}, list likely improvements and their estimated value impact. Property type: ${property.property_type || 'House'}.`
-            }
-          ],
-          max_tokens: 500,
-          temperature: 0.7
-        });
-        improvementsDetected = imageAnalysis.choices[0]?.message?.content || '';
-      } catch (imgError) {
-        console.error('Image analysis error:', imgError);
-      }
-    }
-
-    // Generate comprehensive evaluation report
-    const completion = await getOpenAI().chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [
-        {
-          role: 'system',
-          content: `You are an expert Australian property valuer. Generate a detailed valuation report. Use the comparable sales data provided to inform your valuation.`
-        },
-        {
-          role: 'user',
-          content: `Create a property valuation report for:\n${propertyDesc}${comparablesText}\n\n${improvementsDetected ? 'Detected Improvements:\n' + improvementsDetected : ''}`
-        }
-      ],
-      max_tokens: 1500,
-      temperature: 0.7
-    });
-
-    const evaluationReport = completion.choices[0]?.message?.content || 'Unable to generate evaluation';
-
-    // Update property with evaluation data
-    await db.collection<Property>('properties').updateOne(
-      { id: propertyId },
-      {
-        $set: {
-          evaluation_report: evaluationReport,
-          evaluation_date: new Date().toISOString(),
-          improvements_detected: improvementsDetected || null,
-          comparables_data: comparablesData
-        }
-      }
-    );
-
-    res.json({
-      evaluation_report: evaluationReport,
-      improvements_detected: improvementsDetected || null,
-      comparables_data: comparablesData,
-      success: true
-    });
-  } catch (error: any) {
-    console.error('Evaluate property error:', error);
-    res.status(500).json({ detail: 'Failed to evaluate property: ' + (error.message || 'Unknown error') });
-  }
-});
-
-// POST /api/properties/:propertyId/update-evaluation-report
-router.post('/:propertyId/update-evaluation-report', async (req: Request, res: Response) => {
-  try {
-    const { propertyId } = req.params;
-    const { evaluation_report } = req.body;
-
-    if (!evaluation_report || typeof evaluation_report !== 'string') {
-      res.status(400).json({ detail: 'Evaluation report is required' });
-      return;
-    }
-
-    const db = await getDb();
-
-    const result = await db.collection<Property>('properties').updateOne(
-      { id: propertyId },
-      { $set: { evaluation_report } }
-    );
-
-    if (result.matchedCount === 0) {
-      res.status(404).json({ detail: 'Property not found' });
-      return;
-    }
-
-    res.json({ success: true });
-  } catch (error) {
-    console.error('Update evaluation report error:', error);
-    res.status(500).json({ detail: 'Failed to update evaluation report' });
-  }
-});
-
-// POST /api/properties/:propertyId/save-evaluation - Save evaluation results from frontend
+// POST /api/properties/:propertyId/save-evaluation
 router.post('/:propertyId/save-evaluation', async (req: Request, res: Response) => {
   try {
     const { propertyId } = req.params;
@@ -1065,37 +593,29 @@ router.post('/:propertyId/save-evaluation', async (req: Request, res: Response) 
       return;
     }
 
-    const db = await getDb();
+    const valuation_history = valuation_entry ? JSON.stringify([valuation_entry]) : null;
 
-    // Build update object with all evaluation fields - CLEAR all old evaluation data
-    const updateData: any = {
-      evaluation_report,
-      evaluation_date: new Date().toISOString(),
-      // Clear old fields that should not persist from previous evaluations
-      improvements_detected: null,
-      evaluation_ad: null,
-    };
-
-    if (comparables_data) {
-      updateData.comparables_data = comparables_data;
-    }
-
-    if (confidence_scoring) {
-      updateData.confidence_scoring = confidence_scoring;
-    }
-
-    // Handle valuation history - replace with only the new entry (clear old history)
-    if (valuation_entry) {
-      // Only keep the latest valuation entry, delete all previous history
-      updateData.valuation_history = [valuation_entry];
-    }
-
-    const result = await db.collection<Property>('properties').updateOne(
-      { id: propertyId },
-      { $set: updateData }
+    const rowsAffected = await execute(
+      `UPDATE properties SET
+        evaluation_report = @evaluation_report,
+        evaluation_date = @evaluation_date,
+        comparables_data = @comparables_data,
+        confidence_scoring = @confidence_scoring,
+        valuation_history = @valuation_history,
+        improvements_detected = NULL,
+        evaluation_ad = NULL
+       WHERE id = @id`,
+      {
+        evaluation_report,
+        evaluation_date: new Date(),
+        comparables_data: comparables_data ? JSON.stringify(comparables_data) : null,
+        confidence_scoring: confidence_scoring ? JSON.stringify(confidence_scoring) : null,
+        valuation_history,
+        id: propertyId
+      }
     );
 
-    if (result.matchedCount === 0) {
+    if (rowsAffected === 0) {
       res.status(404).json({ detail: 'Property not found' });
       return;
     }
@@ -1119,14 +639,12 @@ router.post('/:propertyId/apply-valuation', async (req: Request, res: Response) 
       return;
     }
 
-    const db = await getDb();
-
-    const result = await db.collection<Property>('properties').updateOne(
-      { id: propertyId },
-      { $set: { price: market_value } }
+    const rowsAffected = await execute(
+      'UPDATE properties SET price = @price WHERE id = @id',
+      { price: market_value, id: propertyId }
     );
 
-    if (result.matchedCount === 0) {
+    if (rowsAffected === 0) {
       res.status(404).json({ detail: 'Property not found' });
       return;
     }
@@ -1135,112 +653,6 @@ router.post('/:propertyId/apply-valuation', async (req: Request, res: Response) 
   } catch (error) {
     console.error('Apply valuation error:', error);
     res.status(500).json({ detail: 'Failed to apply valuation' });
-  }
-});
-
-// POST /api/properties/:propertyId/apply-marketing-strategy
-router.post('/:propertyId/apply-marketing-strategy', async (req: Request, res: Response) => {
-  try {
-    const { propertyId } = req.params;
-    const { marketing_strategy, pricing_type, price, price_upper } = req.body;
-
-    if (!marketing_strategy || typeof marketing_strategy !== 'string') {
-      res.status(400).json({ detail: 'Marketing strategy is required' });
-      return;
-    }
-
-    const db = await getDb();
-
-    const updateData: any = {
-      marketing_strategy,
-      pricing_type: pricing_type || 'offers_over'
-    };
-
-    if (price && typeof price === 'number') {
-      updateData.price = price;
-    }
-    if (price_upper && typeof price_upper === 'number') {
-      updateData.price_upper = price_upper;
-    }
-
-    const result = await db.collection<Property>('properties').updateOne(
-      { id: propertyId },
-      { $set: updateData }
-    );
-
-    if (result.matchedCount === 0) {
-      res.status(404).json({ detail: 'Property not found' });
-      return;
-    }
-
-    res.json({ success: true });
-  } catch (error) {
-    console.error('Apply marketing strategy error:', error);
-    res.status(500).json({ detail: 'Failed to apply marketing strategy' });
-  }
-});
-
-// POST /api/properties/:propertyId/generate-evaluation-ad
-router.post('/:propertyId/generate-evaluation-ad', async (req: Request, res: Response) => {
-  try {
-    const { propertyId } = req.params;
-    const db = await getDb();
-
-    const property = await db
-      .collection<Property>('properties')
-      .findOne({ id: propertyId }, { projection: { _id: 0 } });
-
-    if (!property) {
-      res.status(404).json({ detail: 'Property not found' });
-      return;
-    }
-
-    if (!property.evaluation_report) {
-      res.status(400).json({ detail: 'Property must be evaluated first' });
-      return;
-    }
-
-    const completion = await getOpenAI().chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [
-        {
-          role: 'system',
-          content: `You are an expert real estate marketing copywriter. Create a compelling Facebook/social media ad based on the property evaluation. The ad should:
-- Highlight the key value propositions from the evaluation
-- Use persuasive, engaging language
-- Include a clear call to action
-- Be suitable for Facebook/Instagram advertising
-- Use emojis strategically for engagement
-- Be 150-250 words`
-        },
-        {
-          role: 'user',
-          content: `Create a marketing ad for this property based on its evaluation:
-
-Location: ${property.location}
-${property.beds} beds, ${property.baths} baths, ${property.carpark} car
-Price: ${property.price ? '$' + property.price.toLocaleString() : 'Contact agent'}
-
-Evaluation Report:
-${property.evaluation_report.substring(0, 1500)}`
-        }
-      ],
-      max_tokens: 400,
-      temperature: 0.7
-    });
-
-    const adContent = completion.choices[0]?.message?.content || 'Unable to generate ad';
-
-    // Save the ad to the property
-    await db.collection<Property>('properties').updateOne(
-      { id: propertyId },
-      { $set: { evaluation_ad: adContent } }
-    );
-
-    res.json({ ad_content: adContent, success: true });
-  } catch (error: any) {
-    console.error('Generate evaluation ad error:', error);
-    res.status(500).json({ detail: 'Failed to generate ad: ' + (error.message || 'Unknown error') });
   }
 });
 

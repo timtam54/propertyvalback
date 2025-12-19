@@ -37,6 +37,15 @@ export interface TokenPayload {
   exp?: number;
 }
 
+// Property Image type (separate collection for property-image relationship)
+export interface PropertyImage {
+  id: string;
+  property_id: string;
+  image_url: string;
+  order: number;  // For maintaining image order
+  created_at: Date;
+}
+
 // Property types
 export interface InclusionItem {
   text: string;
@@ -157,6 +166,8 @@ export interface Property {
     domain_api_error?: string | null;
   } | null;
   selected_comparables?: string[];
+  is_favourite?: boolean;
+  tags?: string[] | null;
 }
 
 export interface PropertyCreate {

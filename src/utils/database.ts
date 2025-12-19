@@ -1,117 +1,87 @@
-import { MongoClient, Db, MongoClientOptions } from 'mongodb';
+import sql from 'mssql';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
-const MONGO_URL = process.env.MONGO_URL || '';
-const DB_NAME = process.env.DB_NAME || 'property_app';
+// Azure SQL Configuration
+const sqlConfig: sql.config = {
+  user: process.env.SQL_USER || 'eoneval',
+  password: process.env.SQL_PASSWORD || 'ABC1234!',
+  database: process.env.SQL_DATABASE || 'eonevalsql',
+  server: process.env.SQL_SERVER || 'eoneval.database.windows.net',
+  pool: {
+    max: 10,
+    min: 0,
+    idleTimeoutMillis: 30000
+  },
+  options: {
+    encrypt: true, // Required for Azure SQL
+    trustServerCertificate: false
+  }
+};
 
-let client: MongoClient;
-let db: Db;
-let connectionAttempts = 0;
+let pool: sql.ConnectionPool | null = null;
 
-export async function connectToDatabase(): Promise<Db> {
-  if (db) return db;
-
-  const options: MongoClientOptions = {
-    serverSelectionTimeoutMS: 10000,
-    connectTimeoutMS: 10000,
-    tls: true,
-    tlsAllowInvalidCertificates: false,
-    retryWrites: true,
-    w: 'majority'
-  };
+export async function connectToDatabase(): Promise<sql.ConnectionPool> {
+  if (pool) return pool;
 
   try {
-    console.log('Attempting to connect to MongoDB...');
-    client = new MongoClient(MONGO_URL, options);
-    await client.connect();
-    db = client.db(DB_NAME);
+    console.log('Attempting to connect to Azure SQL...');
+    console.log(`Server: ${sqlConfig.server}, Database: ${sqlConfig.database}`);
 
-    console.log('Connected to MongoDB successfully');
+    pool = await sql.connect(sqlConfig);
+    console.log('Connected to Azure SQL successfully');
 
-    // Create indexes
-    await createIndexes();
-
-    return db;
+    return pool;
   } catch (error: any) {
-    connectionAttempts++;
-    console.error(`Failed to connect to MongoDB (attempt ${connectionAttempts}):`, error.message);
-
-    // Provide helpful message for TLS errors
-    if (error.message?.includes('TLS') || error.message?.includes('SSL') || error.message?.includes('tlsv1')) {
-      console.error('\n=== TROUBLESHOOTING TLS ERROR ===');
-      console.error('This error usually means:');
-      console.error('1. Your IP address is not whitelisted in MongoDB Atlas');
-      console.error('   - Go to MongoDB Atlas > Network Access > Add IP Address');
-      console.error('   - Add your current IP or use 0.0.0.0/0 for development');
-      console.error('2. The cluster might be paused (free tier clusters pause after inactivity)');
-      console.error('   - Go to MongoDB Atlas and resume the cluster');
-      console.error('3. The connection string might be incorrect');
-      console.error('================================\n');
-    }
-
+    console.error('Failed to connect to Azure SQL:', error.message);
     throw error;
   }
 }
 
-async function createIndexes(): Promise<void> {
-  try {
-    // Property indexes
-    await db.collection('properties').createIndex({ id: 1 }, { unique: true });
-    await db.collection('properties').createIndex({ user_id: 1 });
-    await db.collection('properties').createIndex({ user_email: 1 });
-    await db.collection('properties').createIndex({ created_at: 1 });
-    await db.collection('properties').createIndex({ agent_id: 1 });
-
-    // User indexes
-    await db.collection('users').createIndex({ email: 1 }, { unique: true });
-    await db.collection('users').createIndex({ id: 1 }, { unique: true });
-
-    // Property sales indexes
-    await db.collection('property_sales').createIndex({ suburb: 1 });
-    await db.collection('property_sales').createIndex({ state: 1 });
-    await db.collection('property_sales').createIndex({ sale_date: -1 });
-
-    // Agent indexes
-    await db.collection('agents').createIndex({ email: 1 }, { unique: true });
-    await db.collection('agents').createIndex({ id: 1 }, { unique: true });
-
-    // Audit indexes
-    await db.collection('audit').createIndex({ id: 1 }, { unique: true });
-    await db.collection('audit').createIndex({ dte: -1 });
-    await db.collection('audit').createIndex({ username: 1 });
-    await db.collection('audit').createIndex({ page: 1 });
-    await db.collection('audit').createIndex({ propertyid: 1 });
-
-    // Historic sales cache indexes
-    await db.collection('historic_sales_cache').createIndex({ cache_key: 1 }, { unique: true });
-    await db.collection('historic_sales_cache').createIndex({ cached_at: 1 });
-
-    console.log('Database indexes created successfully');
-  } catch (error) {
-    console.warn('Error creating indexes (may already exist):', error);
-  }
-}
-
-let connectionPromise: Promise<Db> | null = null;
-
-export async function getDb(): Promise<Db> {
-  if (db) return db;
-
-  // If connection is in progress, wait for it
-  if (connectionPromise) {
-    return connectionPromise;
-  }
-
-  // Start new connection
-  connectionPromise = connectToDatabase();
-  return connectionPromise;
+export async function getDb(): Promise<sql.ConnectionPool> {
+  if (pool && pool.connected) return pool;
+  return connectToDatabase();
 }
 
 export async function closeDatabase(): Promise<void> {
-  if (client) {
-    await client.close();
-    console.log('MongoDB connection closed');
+  if (pool) {
+    await pool.close();
+    pool = null;
+    console.log('Azure SQL connection closed');
   }
 }
+
+// Helper function to execute queries
+export async function query<T>(queryString: string, params?: Record<string, any>): Promise<sql.IResult<T>> {
+  const db = await getDb();
+  const request = db.request();
+
+  if (params) {
+    for (const [key, value] of Object.entries(params)) {
+      request.input(key, value);
+    }
+  }
+
+  return request.query(queryString);
+}
+
+// Helper to get a single row
+export async function queryOne<T>(queryString: string, params?: Record<string, any>): Promise<T | null> {
+  const result = await query<T>(queryString, params);
+  return result.recordset.length > 0 ? result.recordset[0] : null;
+}
+
+// Helper to get multiple rows
+export async function queryMany<T>(queryString: string, params?: Record<string, any>): Promise<T[]> {
+  const result = await query<T>(queryString, params);
+  return result.recordset;
+}
+
+// Helper for INSERT/UPDATE/DELETE
+export async function execute(queryString: string, params?: Record<string, any>): Promise<number> {
+  const result = await query(queryString, params);
+  return result.rowsAffected[0] || 0;
+}
+
+export { sql };

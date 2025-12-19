@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { getDb } from '../utils/database';
+import { getDb, queryOne, queryMany, execute } from '../utils/database';
 import { hashPassword, verifyPassword, createAccessToken } from '../utils/auth';
 import { authenticateToken } from '../middleware/auth';
 import { User, UserSignup } from '../models/types';
@@ -22,10 +22,12 @@ router.post('/signup', async (req: Request, res: Response) => {
       return;
     }
 
-    const db = await getDb();
-
     // Check if user already exists
-    const existingUser = await db.collection<User>('users').findOne({ email });
+    const existingUser = await queryOne<User>(
+      'SELECT * FROM users WHERE email = @email',
+      { email }
+    );
+
     if (existingUser) {
       res.status(409).json({ detail: 'Email already registered' });
       return;
@@ -33,24 +35,19 @@ router.post('/signup', async (req: Request, res: Response) => {
 
     // Create new user
     const userId = Date.now().toString();
-    const userDoc: User = {
-      id: userId,
-      email,
-      username,
-      hashed_password: hashPassword(password),
-      subscription_tier: 'free',
-      subscription_active: false,
-      subscription_end_date: null,
-      trial_active: false,
-      trial_end_date: null,
-      stripe_customer_id: null,
-      stripe_subscription_id: null,
-      created_at: new Date(),
-      last_login: null,
-      is_active: true
-    };
+    const now = new Date();
 
-    await db.collection<User>('users').insertOne(userDoc);
+    await execute(
+      `INSERT INTO users (id, email, username, hashed_password, subscription_tier, subscription_active, trial_active, created_at, is_active)
+       VALUES (@id, @email, @username, @hashed_password, 'free', 0, 0, @created_at, 1)`,
+      {
+        id: userId,
+        email,
+        username,
+        hashed_password: hashPassword(password),
+        created_at: now
+      }
+    );
 
     // Generate token
     const accessToken = createAccessToken({ sub: userId, email });
@@ -83,20 +80,21 @@ router.post('/login', async (req: Request, res: Response) => {
       return;
     }
 
-    const db = await getDb();
+    // Find user by email
+    const user = await queryOne<User>(
+      'SELECT * FROM users WHERE email = @email',
+      { email: username }
+    );
 
-    // Find user by email (username field contains email in OAuth2 form)
-    const user = await db.collection<User>('users').findOne({ email: username });
-
-    if (!user || !verifyPassword(password, user.hashed_password)) {
+    if (!user || !verifyPassword(password, user.hashed_password || '')) {
       res.status(401).json({ detail: 'Invalid email or password' });
       return;
     }
 
     // Update last login
-    await db.collection<User>('users').updateOne(
-      { email: user.email },
-      { $set: { last_login: new Date() } }
+    await execute(
+      'UPDATE users SET last_login = @last_login WHERE email = @email',
+      { last_login: new Date(), email: user.email }
     );
 
     // Generate token
@@ -151,22 +149,24 @@ router.post('/oauth-sync', async (req: Request, res: Response) => {
       return;
     }
 
-    const db = await getDb();
-
     // Check if user already exists
-    const existingUser = await db.collection<User>('users').findOne({ email });
+    const existingUser = await queryOne<User>(
+      'SELECT * FROM users WHERE email = @email',
+      { email }
+    );
 
     if (existingUser) {
-      // Update last login
-      await db.collection<User>('users').updateOne(
-        { email },
+      // Update last login and optionally name/picture
+      await execute(
+        `UPDATE users SET last_login = @last_login,
+         username = COALESCE(@username, username),
+         picture = COALESCE(@picture, picture)
+         WHERE email = @email`,
         {
-          $set: {
-            last_login: new Date(),
-            // Update name/picture if provided (user might update their profile)
-            ...(name && { username: name }),
-            ...(picture && { picture })
-          }
+          last_login: new Date(),
+          username: name || null,
+          picture: picture || null,
+          email
         }
       );
 
@@ -182,26 +182,21 @@ router.post('/oauth-sync', async (req: Request, res: Response) => {
     } else {
       // Create new user
       const userId = Date.now().toString();
-      const userDoc: User = {
-        id: userId,
-        email,
-        username: name || email.split('@')[0],
-        hashed_password: '', // No password for OAuth users
-        subscription_tier: 'free',
-        subscription_active: false,
-        subscription_end_date: null,
-        trial_active: false,
-        trial_end_date: null,
-        stripe_customer_id: null,
-        stripe_subscription_id: null,
-        created_at: new Date(),
-        last_login: new Date(),
-        is_active: true,
-        auth_provider: provider || 'oauth',
-        picture: picture || null
-      };
+      const now = new Date();
 
-      await db.collection<User>('users').insertOne(userDoc);
+      await execute(
+        `INSERT INTO users (id, email, username, hashed_password, subscription_tier, subscription_active, trial_active, created_at, last_login, is_active, auth_provider, picture)
+         VALUES (@id, @email, @username, '', 'free', 0, 0, @created_at, @last_login, 1, @auth_provider, @picture)`,
+        {
+          id: userId,
+          email,
+          username: name || email.split('@')[0],
+          created_at: now,
+          last_login: now,
+          auth_provider: provider || 'oauth',
+          picture: picture || null
+        }
+      );
 
       res.status(201).json({
         success: true,
@@ -253,18 +248,13 @@ router.get('/subscription-status', authenticateToken, async (req: Request, res: 
 // GET /api/auth/users - Get all users (admin endpoint)
 router.get('/users', async (req: Request, res: Response) => {
   try {
-    const db = await getDb();
-
-    const users = await db
-      .collection<User>('users')
-      .find({}, {
-        projection: {
-          _id: 0,
-          hashed_password: 0 // Never expose passwords
-        }
-      })
-      .sort({ last_login: -1 })
-      .toArray();
+    const users = await queryMany<User>(
+      `SELECT id, email, username, subscription_tier, subscription_active, subscription_end_date,
+              trial_active, trial_end_date, stripe_customer_id, stripe_subscription_id,
+              created_at, last_login, is_active, auth_provider, picture
+       FROM users
+       ORDER BY last_login DESC`
+    );
 
     res.json({
       success: true,

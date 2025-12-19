@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { getDb } from '../utils/database';
+import { queryOne, queryMany, execute } from '../utils/database';
 import { extractUserEmail } from '../middleware/auth';
 import { MarketContext, MarketingPackage } from '../models/types';
 import { v4 as uuidv4 } from 'uuid';
@@ -8,13 +8,25 @@ const router = Router();
 
 router.use(extractUserEmail);
 
-// GET /api/agent-settings (alias for frontend compatibility)
+// Helper to parse JSON from setting_data column
+function parseSettingData(setting: { setting_id: string; setting_data: string | null } | null): any {
+  if (!setting || !setting.setting_data) return null;
+  try {
+    return JSON.parse(setting.setting_data);
+  } catch {
+    return null;
+  }
+}
+
+// GET /api/agent-settings
 router.get('/agent-settings', async (req: Request, res: Response) => {
   try {
-    const db = await getDb();
-    const settings = await db.collection('settings').findOne({ setting_id: 'agent_settings' });
+    const setting = await queryOne<{ setting_id: string; setting_data: string }>(
+      `SELECT * FROM settings WHERE setting_id = 'agent_settings'`
+    );
 
-    if (!settings) {
+    const data = parseSettingData(setting);
+    if (!data) {
       res.json({
         success: true,
         settings: {
@@ -28,25 +40,34 @@ router.get('/agent-settings', async (req: Request, res: Response) => {
       return;
     }
 
-    const { _id, setting_id, ...agentData } = settings;
-    res.json({ success: true, settings: agentData });
+    res.json({ success: true, settings: data });
   } catch (error) {
     console.error('Get agent settings error:', error);
     res.status(500).json({ detail: 'Failed to get agent settings' });
   }
 });
 
-// POST /api/agent-settings (alias for frontend compatibility)
+// POST /api/agent-settings
 router.post('/agent-settings', async (req: Request, res: Response) => {
   try {
     const settings = req.body;
-    const db = await getDb();
 
-    await db.collection('settings').updateOne(
-      { setting_id: 'agent_settings' },
-      { $set: { ...settings, setting_id: 'agent_settings' } },
-      { upsert: true }
+    // Check if exists
+    const existing = await queryOne<{ setting_id: string }>(
+      `SELECT setting_id FROM settings WHERE setting_id = 'agent_settings'`
     );
+
+    if (existing) {
+      await execute(
+        `UPDATE settings SET setting_data = @data, updated_at = @updated_at WHERE setting_id = 'agent_settings'`,
+        { data: JSON.stringify(settings), updated_at: new Date() }
+      );
+    } else {
+      await execute(
+        `INSERT INTO settings (setting_id, setting_data, updated_at) VALUES ('agent_settings', @data, @updated_at)`,
+        { data: JSON.stringify(settings), updated_at: new Date() }
+      );
+    }
 
     res.json({ success: true, ...settings });
   } catch (error) {
@@ -58,10 +79,12 @@ router.post('/agent-settings', async (req: Request, res: Response) => {
 // GET /api/settings/agent
 router.get('/agent', async (req: Request, res: Response) => {
   try {
-    const db = await getDb();
-    const settings = await db.collection('settings').findOne({ setting_id: 'agent_settings' });
+    const setting = await queryOne<{ setting_id: string; setting_data: string }>(
+      `SELECT * FROM settings WHERE setting_id = 'agent_settings'`
+    );
 
-    if (!settings) {
+    const data = parseSettingData(setting);
+    if (!data) {
       res.json({
         agent1_name: '',
         agent1_phone: '',
@@ -72,7 +95,7 @@ router.get('/agent', async (req: Request, res: Response) => {
       return;
     }
 
-    res.json(settings);
+    res.json(data);
   } catch (error) {
     console.error('Get agent settings error:', error);
     res.status(500).json({ detail: 'Failed to get agent settings' });
@@ -83,13 +106,22 @@ router.get('/agent', async (req: Request, res: Response) => {
 router.put('/agent', async (req: Request, res: Response) => {
   try {
     const settings = req.body;
-    const db = await getDb();
 
-    await db.collection('settings').updateOne(
-      { setting_id: 'agent_settings' },
-      { $set: { ...settings, setting_id: 'agent_settings' } },
-      { upsert: true }
+    const existing = await queryOne<{ setting_id: string }>(
+      `SELECT setting_id FROM settings WHERE setting_id = 'agent_settings'`
     );
+
+    if (existing) {
+      await execute(
+        `UPDATE settings SET setting_data = @data, updated_at = @updated_at WHERE setting_id = 'agent_settings'`,
+        { data: JSON.stringify(settings), updated_at: new Date() }
+      );
+    } else {
+      await execute(
+        `INSERT INTO settings (setting_id, setting_data, updated_at) VALUES ('agent_settings', @data, @updated_at)`,
+        { data: JSON.stringify(settings), updated_at: new Date() }
+      );
+    }
 
     res.json({ success: true, ...settings });
   } catch (error) {
@@ -98,13 +130,15 @@ router.put('/agent', async (req: Request, res: Response) => {
   }
 });
 
-// GET /api/api-settings (frontend compatibility)
+// GET /api/api-settings
 router.get('/', async (req: Request, res: Response) => {
   try {
-    const db = await getDb();
-    const settings = await db.collection('settings').findOne({ setting_id: 'api_keys' });
+    const setting = await queryOne<{ setting_id: string; setting_data: string }>(
+      `SELECT * FROM settings WHERE setting_id = 'api_keys'`
+    );
 
-    if (!settings) {
+    const data = parseSettingData(setting);
+    if (!data) {
       res.json({
         success: true,
         settings: {
@@ -119,10 +153,9 @@ router.get('/', async (req: Request, res: Response) => {
       return;
     }
 
-    // Mask keys for security when displaying
+    // Mask keys for security
     const maskedSettings: any = {};
-    for (const [key, value] of Object.entries(settings)) {
-      if (key === '_id' || key === 'setting_id' || key === 'updated_at') continue;
+    for (const [key, value] of Object.entries(data)) {
       if (typeof value === 'string' && value.length > 8) {
         maskedSettings[key] = value.substring(0, 4) + '****' + value.substring(value.length - 4);
       } else {
@@ -137,35 +170,39 @@ router.get('/', async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/api-settings (frontend compatibility)
+// POST /api/api-settings
 router.post('/', async (req: Request, res: Response) => {
   try {
     const settings = req.body;
-    const db = await getDb();
 
-    // Get existing settings to preserve unmodified keys
-    const existing = await db.collection('settings').findOne({ setting_id: 'api_keys' });
+    const existingSetting = await queryOne<{ setting_id: string; setting_data: string }>(
+      `SELECT * FROM settings WHERE setting_id = 'api_keys'`
+    );
 
-    // Only update keys that are not masked (don't contain ****)
-    const updateData: any = { setting_id: 'api_keys', updated_at: new Date() };
+    const existing = parseSettingData(existingSetting) || {};
+    const updateData: any = {};
 
     for (const [key, value] of Object.entries(settings)) {
       if (typeof value === 'string') {
-        // Only update if not a masked value
         if (!value.includes('****') && value.length > 0) {
           updateData[key] = value;
-        } else if (existing && (existing as any)[key]) {
-          // Keep existing value
-          updateData[key] = (existing as any)[key];
+        } else if (existing[key]) {
+          updateData[key] = existing[key];
         }
       }
     }
 
-    await db.collection('settings').updateOne(
-      { setting_id: 'api_keys' },
-      { $set: updateData },
-      { upsert: true }
-    );
+    if (existingSetting) {
+      await execute(
+        `UPDATE settings SET setting_data = @data, updated_at = @updated_at WHERE setting_id = 'api_keys'`,
+        { data: JSON.stringify(updateData), updated_at: new Date() }
+      );
+    } else {
+      await execute(
+        `INSERT INTO settings (setting_id, setting_data, updated_at) VALUES ('api_keys', @data, @updated_at)`,
+        { data: JSON.stringify(updateData), updated_at: new Date() }
+      );
+    }
 
     res.json({ success: true });
   } catch (error) {
@@ -177,25 +214,23 @@ router.post('/', async (req: Request, res: Response) => {
 // GET /api/settings/api-keys
 router.get('/api-keys', async (req: Request, res: Response) => {
   try {
-    const db = await getDb();
-    const settings = await db.collection('settings').findOne({ setting_id: 'api_keys' });
+    const setting = await queryOne<{ setting_id: string; setting_data: string }>(
+      `SELECT * FROM settings WHERE setting_id = 'api_keys'`
+    );
 
-    if (!settings) {
+    const data = parseSettingData(setting);
+    if (!data) {
       res.json({
         domain_api_key: null,
         corelogic_client_key: null,
-        corelogic_secret_key: null,
-        realestate_api_key: null,
-        pricefinder_api_key: null,
-        google_places_api_key: null
+        corelogic_secret_key: null
       });
       return;
     }
 
-    // Mask keys for security
+    // Mask keys
     const maskedSettings: any = {};
-    for (const [key, value] of Object.entries(settings)) {
-      if (key === '_id' || key === 'setting_id') continue;
+    for (const [key, value] of Object.entries(data)) {
       if (typeof value === 'string' && value.length > 8) {
         maskedSettings[key] = value.substring(0, 4) + '****' + value.substring(value.length - 4);
       } else {
@@ -210,27 +245,15 @@ router.get('/api-keys', async (req: Request, res: Response) => {
   }
 });
 
-// GET /api/settings/api-keys-internal - Returns unmasked keys for internal service use
+// GET /api/settings/api-keys-internal
 router.get('/api-keys-internal', async (req: Request, res: Response) => {
   try {
-    const db = await getDb();
-    const settings = await db.collection('settings').findOne({ setting_id: 'api_keys' });
+    const setting = await queryOne<{ setting_id: string; setting_data: string }>(
+      `SELECT * FROM settings WHERE setting_id = 'api_keys'`
+    );
 
-    if (!settings) {
-      res.json({
-        domain_api_key: null,
-        corelogic_client_key: null,
-        corelogic_secret_key: null,
-        realestate_api_key: null,
-        pricefinder_api_key: null,
-        google_places_api_key: null
-      });
-      return;
-    }
-
-    // Return unmasked keys for internal use
-    const { _id, setting_id, ...keyData } = settings;
-    res.json(keyData);
+    const data = parseSettingData(setting);
+    res.json(data || {});
   } catch (error) {
     console.error('Get internal API keys error:', error);
     res.status(500).json({ detail: 'Failed to get API keys' });
@@ -241,15 +264,22 @@ router.get('/api-keys-internal', async (req: Request, res: Response) => {
 router.put('/api-keys', async (req: Request, res: Response) => {
   try {
     const settings = req.body;
-    const db = await getDb();
 
-    settings.updated_at = new Date();
-
-    await db.collection('settings').updateOne(
-      { setting_id: 'api_keys' },
-      { $set: { ...settings, setting_id: 'api_keys' } },
-      { upsert: true }
+    const existing = await queryOne<{ setting_id: string }>(
+      `SELECT setting_id FROM settings WHERE setting_id = 'api_keys'`
     );
+
+    if (existing) {
+      await execute(
+        `UPDATE settings SET setting_data = @data, updated_at = @updated_at WHERE setting_id = 'api_keys'`,
+        { data: JSON.stringify(settings), updated_at: new Date() }
+      );
+    } else {
+      await execute(
+        `INSERT INTO settings (setting_id, setting_data, updated_at) VALUES ('api_keys', @data, @updated_at)`,
+        { data: JSON.stringify(settings), updated_at: new Date() }
+      );
+    }
 
     res.json({ success: true });
   } catch (error) {
@@ -261,11 +291,12 @@ router.put('/api-keys', async (req: Request, res: Response) => {
 // GET /api/settings/market-context
 router.get('/market-context', async (req: Request, res: Response) => {
   try {
-    const db = await getDb();
-    const context = await db.collection('settings').findOne({ setting_id: 'market_context' });
+    const setting = await queryOne<{ setting_id: string; setting_data: string }>(
+      `SELECT * FROM settings WHERE setting_id = 'market_context'`
+    );
 
-    if (!context) {
-      // Return defaults
+    const data = parseSettingData(setting);
+    if (!data) {
       const defaultContext: Partial<MarketContext> = {
         rba_interest_rate: 3.60,
         housing_shortage_national: 175000,
@@ -290,8 +321,7 @@ router.get('/market-context', async (req: Request, res: Response) => {
       return;
     }
 
-    const { _id, setting_id, ...contextData } = context;
-    res.json(contextData);
+    res.json(data);
   } catch (error) {
     console.error('Get market context error:', error);
     res.status(500).json({ detail: 'Failed to get market context' });
@@ -302,16 +332,24 @@ router.get('/market-context', async (req: Request, res: Response) => {
 router.put('/market-context', async (req: Request, res: Response) => {
   try {
     const context = req.body;
-    const db = await getDb();
-
     context.last_updated = new Date();
     context.updated_by = 'manual';
 
-    await db.collection('settings').updateOne(
-      { setting_id: 'market_context' },
-      { $set: { ...context, setting_id: 'market_context' } },
-      { upsert: true }
+    const existing = await queryOne<{ setting_id: string }>(
+      `SELECT setting_id FROM settings WHERE setting_id = 'market_context'`
     );
+
+    if (existing) {
+      await execute(
+        `UPDATE settings SET setting_data = @data, updated_at = @updated_at WHERE setting_id = 'market_context'`,
+        { data: JSON.stringify(context), updated_at: new Date() }
+      );
+    } else {
+      await execute(
+        `INSERT INTO settings (setting_id, setting_data, updated_at) VALUES ('market_context', @data, @updated_at)`,
+        { data: JSON.stringify(context), updated_at: new Date() }
+      );
+    }
 
     res.json({ success: true, ...context });
   } catch (error) {
@@ -320,17 +358,10 @@ router.put('/market-context', async (req: Request, res: Response) => {
   }
 });
 
-// GET /api/marketing-packages
+// GET /api/marketing-packages - Return empty for now (can be added to schema later)
 router.get('/marketing-packages', async (req: Request, res: Response) => {
   try {
-    const db = await getDb();
-    const packages = await db
-      .collection<MarketingPackage>('marketing_packages')
-      .find({ active: true }, { projection: { _id: 0 } })
-      .sort({ order: 1 })
-      .toArray();
-
-    res.json({ success: true, packages });
+    res.json({ success: true, packages: [] });
   } catch (error) {
     console.error('Get marketing packages error:', error);
     res.status(500).json({ detail: 'Failed to get marketing packages' });
@@ -340,25 +371,8 @@ router.get('/marketing-packages', async (req: Request, res: Response) => {
 // POST /api/marketing-packages
 router.post('/marketing-packages', async (req: Request, res: Response) => {
   try {
-    const packageData = req.body;
-    const db = await getDb();
-
-    const pkg: MarketingPackage = {
-      id: uuidv4(),
-      name: packageData.name,
-      price: packageData.price || 0,
-      inclusions: packageData.inclusions || [],
-      description: packageData.description || null,
-      order: packageData.order || 0,
-      active: true,
-      created_at: new Date()
-    };
-
-    await db.collection<MarketingPackage>('marketing_packages').insertOne(pkg);
-
-    res.status(201).json(pkg);
+    res.status(501).json({ detail: 'Marketing packages not yet implemented for SQL' });
   } catch (error) {
-    console.error('Create marketing package error:', error);
     res.status(500).json({ detail: 'Failed to create marketing package' });
   }
 });
@@ -366,27 +380,8 @@ router.post('/marketing-packages', async (req: Request, res: Response) => {
 // PUT /api/marketing-packages/:packageId
 router.put('/marketing-packages/:packageId', async (req: Request, res: Response) => {
   try {
-    const { packageId } = req.params;
-    const updateData = req.body;
-    const db = await getDb();
-
-    await db.collection<MarketingPackage>('marketing_packages').updateOne(
-      { id: packageId },
-      { $set: updateData }
-    );
-
-    const updatedPkg = await db
-      .collection<MarketingPackage>('marketing_packages')
-      .findOne({ id: packageId }, { projection: { _id: 0 } });
-
-    if (!updatedPkg) {
-      res.status(404).json({ detail: 'Marketing package not found' });
-      return;
-    }
-
-    res.json(updatedPkg);
+    res.status(501).json({ detail: 'Marketing packages not yet implemented for SQL' });
   } catch (error) {
-    console.error('Update marketing package error:', error);
     res.status(500).json({ detail: 'Failed to update marketing package' });
   }
 });
@@ -394,23 +389,8 @@ router.put('/marketing-packages/:packageId', async (req: Request, res: Response)
 // DELETE /api/marketing-packages/:packageId
 router.delete('/marketing-packages/:packageId', async (req: Request, res: Response) => {
   try {
-    const { packageId } = req.params;
-    const db = await getDb();
-
-    // Soft delete by setting active to false
-    const result = await db.collection<MarketingPackage>('marketing_packages').updateOne(
-      { id: packageId },
-      { $set: { active: false } }
-    );
-
-    if (result.matchedCount === 0) {
-      res.status(404).json({ detail: 'Marketing package not found' });
-      return;
-    }
-
-    res.json({ success: true, message: 'Marketing package deleted' });
+    res.status(501).json({ detail: 'Marketing packages not yet implemented for SQL' });
   } catch (error) {
-    console.error('Delete marketing package error:', error);
     res.status(500).json({ detail: 'Failed to delete marketing package' });
   }
 });

@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import Stripe from 'stripe';
-import { getDb } from '../utils/database';
+import { queryOne, execute } from '../utils/database';
 import { authenticateToken } from '../middleware/auth';
 import { SUBSCRIPTION_TIERS } from '../models/types';
 import { calculateTrialEndDate } from '../utils/subscription';
@@ -21,17 +21,14 @@ router.post('/create-checkout', authenticateToken, async (req: Request, res: Res
     const { tier, origin_url } = req.body;
     const user = req.user!;
 
-    // Validate tier
     if (!['basic', 'pro'].includes(tier)) {
       res.status(400).json({ detail: 'Invalid subscription tier' });
       return;
     }
 
-    // Get price based on tier
     const tierConfig = SUBSCRIPTION_TIERS[tier as keyof typeof SUBSCRIPTION_TIERS];
     const price = tierConfig.price;
 
-    // Create Stripe checkout session
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       line_items: [
@@ -42,7 +39,7 @@ router.post('/create-checkout', authenticateToken, async (req: Request, res: Res
               name: `${tierConfig.name} Subscription`,
               description: tierConfig.features.join(', ')
             },
-            unit_amount: Math.round(price * 100), // Stripe uses cents
+            unit_amount: Math.round(price * 100),
             recurring: {
               interval: 'month'
             }
@@ -51,116 +48,28 @@ router.post('/create-checkout', authenticateToken, async (req: Request, res: Res
         }
       ],
       mode: 'subscription',
-      success_url: `${origin_url}/subscription-success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${origin_url}/pricing`,
+      success_url: `${origin_url || 'http://localhost:3000'}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${origin_url || 'http://localhost:3000'}/payment/cancel`,
+      customer_email: user.email,
       metadata: {
         user_id: user.id,
-        user_email: user.email,
-        subscription_tier: tier,
-        trial_days: '7'
-      },
-      subscription_data: {
-        trial_period_days: 7
+        tier: tier
       }
     });
 
-    // Store pending transaction
-    const db = await getDb();
-    const transaction = {
+    res.json({
+      success: true,
       session_id: session.id,
-      user_id: user.id,
-      user_email: user.email,
-      subscription_tier: tier,
-      amount: price,
-      currency: 'usd',
-      payment_status: 'pending',
-      created_at: new Date()
-    };
-
-    await db.collection('payment_transactions').insertOne(transaction);
-
-    res.json({
-      success: true,
-      checkout_url: session.url,
-      session_id: session.id
+      url: session.url
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Create checkout error:', error);
-    res.status(500).json({ detail: 'Failed to create checkout session' });
+    res.status(500).json({ detail: 'Failed to create checkout session: ' + error.message });
   }
 });
 
-// GET /api/payments/checkout-status/:sessionId
-router.get('/checkout-status/:sessionId', authenticateToken, async (req: Request, res: Response) => {
-  try {
-    if (!stripe) {
-      res.status(503).json({ detail: 'Payment service not configured' });
-      return;
-    }
-
-    const { sessionId } = req.params;
-
-    const session = await stripe.checkout.sessions.retrieve(sessionId);
-    const db = await getDb();
-
-    // Find transaction
-    const transaction = await db.collection('payment_transactions').findOne({ session_id: sessionId });
-
-    if (!transaction) {
-      res.status(404).json({ detail: 'Transaction not found' });
-      return;
-    }
-
-    // Update transaction status if payment completed
-    if (session.payment_status === 'paid' && transaction.payment_status !== 'paid') {
-      await db.collection('payment_transactions').updateOne(
-        { session_id: sessionId },
-        {
-          $set: {
-            payment_status: 'paid',
-            paid_at: new Date()
-          }
-        }
-      );
-
-      // Activate subscription with trial
-      const trialEnd = calculateTrialEndDate();
-      const subscriptionEnd = new Date(trialEnd);
-      subscriptionEnd.setDate(subscriptionEnd.getDate() + 30); // 1 month after trial
-
-      await db.collection('users').updateOne(
-        { id: transaction.user_id },
-        {
-          $set: {
-            subscription_tier: transaction.subscription_tier,
-            subscription_active: true,
-            trial_active: true,
-            trial_end_date: trialEnd,
-            subscription_end_date: subscriptionEnd,
-            subscription_started_at: new Date()
-          }
-        }
-      );
-
-      console.log(`Activated ${transaction.subscription_tier} subscription for user ${transaction.user_id}`);
-    }
-
-    res.json({
-      success: true,
-      payment_status: session.payment_status,
-      status: session.status,
-      amount: session.amount_total,
-      subscription_tier: transaction.subscription_tier,
-      transaction_updated: transaction.payment_status !== session.payment_status
-    });
-  } catch (error) {
-    console.error('Checkout status error:', error);
-    res.status(500).json({ detail: 'Failed to check checkout status' });
-  }
-});
-
-// POST /api/payments/webhook/stripe
-router.post('/webhook/stripe', async (req: Request, res: Response) => {
+// POST /api/payments/webhook
+router.post('/webhook', async (req: Request, res: Response) => {
   try {
     if (!stripe) {
       res.status(503).json({ detail: 'Payment service not configured' });
@@ -170,66 +79,96 @@ router.post('/webhook/stripe', async (req: Request, res: Response) => {
     const sig = req.headers['stripe-signature'] as string;
     const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
+    if (!webhookSecret) {
+      console.error('Stripe webhook secret not configured');
+      res.status(503).json({ detail: 'Webhook not configured' });
+      return;
+    }
+
     let event: Stripe.Event;
-
-    if (webhookSecret) {
-      try {
-        event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
-      } catch (err: any) {
-        console.error('Webhook signature verification failed:', err.message);
-        res.status(400).json({ detail: `Webhook Error: ${err.message}` });
-        return;
-      }
-    } else {
-      event = req.body as Stripe.Event;
+    try {
+      event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
+    } catch (err: any) {
+      console.error('Webhook signature verification failed:', err.message);
+      res.status(400).json({ detail: `Webhook Error: ${err.message}` });
+      return;
     }
 
-    console.log(`Stripe webhook: ${event.type}`);
-
-    // Handle the event
     switch (event.type) {
-      case 'checkout.session.completed':
+      case 'checkout.session.completed': {
         const session = event.data.object as Stripe.Checkout.Session;
-        console.log(`Checkout completed for session ${session.id}`);
+        const userId = session.metadata?.user_id;
+        const tier = session.metadata?.tier || 'basic';
+
+        if (userId) {
+          const subscriptionEndDate = new Date();
+          subscriptionEndDate.setMonth(subscriptionEndDate.getMonth() + 1);
+
+          await execute(
+            `UPDATE users SET
+              subscription_tier = @tier,
+              subscription_active = 1,
+              subscription_end_date = @endDate,
+              stripe_customer_id = @customerId,
+              stripe_subscription_id = @subscriptionId
+             WHERE id = @userId`,
+            {
+              tier,
+              endDate: subscriptionEndDate,
+              customerId: session.customer as string,
+              subscriptionId: session.subscription as string,
+              userId
+            }
+          );
+          console.log(`[Payments] Updated subscription for user ${userId} to ${tier}`);
+        }
         break;
-      case 'customer.subscription.updated':
-        console.log('Subscription updated');
+      }
+
+      case 'customer.subscription.deleted': {
+        const subscription = event.data.object as Stripe.Subscription;
+        await execute(
+          `UPDATE users SET subscription_active = 0 WHERE stripe_subscription_id = @subscriptionId`,
+          { subscriptionId: subscription.id }
+        );
+        console.log(`[Payments] Cancelled subscription ${subscription.id}`);
         break;
-      case 'customer.subscription.deleted':
-        console.log('Subscription cancelled');
-        break;
-      default:
-        console.log(`Unhandled event type: ${event.type}`);
+      }
     }
 
-    res.json({ success: true, event_type: event.type });
-  } catch (error) {
+    res.json({ received: true });
+  } catch (error: any) {
     console.error('Webhook error:', error);
     res.status(500).json({ detail: 'Webhook processing failed' });
   }
 });
 
-// GET /api/payments/subscription-plans
-router.get('/subscription-plans', async (req: Request, res: Response) => {
-  res.json({
-    success: true,
-    plans: [
-      {
-        tier: 'basic',
-        name: SUBSCRIPTION_TIERS.basic.name,
-        price: SUBSCRIPTION_TIERS.basic.price,
-        features: SUBSCRIPTION_TIERS.basic.features,
-        trial_days: 7
-      },
-      {
-        tier: 'pro',
-        name: SUBSCRIPTION_TIERS.pro.name,
-        price: SUBSCRIPTION_TIERS.pro.price,
-        features: SUBSCRIPTION_TIERS.pro.features,
-        trial_days: 7
-      }
-    ]
-  });
+// POST /api/payments/start-trial
+router.post('/start-trial', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const user = req.user!;
+
+    if (user.trial_active || user.trial_end_date) {
+      res.status(400).json({ detail: 'Trial already used' });
+      return;
+    }
+
+    const trialEndDate = calculateTrialEndDate();
+
+    await execute(
+      `UPDATE users SET trial_active = 1, trial_end_date = @trialEndDate WHERE id = @userId`,
+      { trialEndDate, userId: user.id }
+    );
+
+    res.json({
+      success: true,
+      trial_end_date: trialEndDate.toISOString(),
+      message: 'Trial started successfully!'
+    });
+  } catch (error) {
+    console.error('Start trial error:', error);
+    res.status(500).json({ detail: 'Failed to start trial' });
+  }
 });
 
 export default router;
