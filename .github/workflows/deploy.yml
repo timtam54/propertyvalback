@@ -53,4 +53,5 @@ jobs:
             --resource-group propertyval-rg \
             --name propertyval-api \
             --src-path deploy.zip \
-            --type zip
+            --type zip \
+            --async true
