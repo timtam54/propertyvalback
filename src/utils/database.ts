@@ -5,10 +5,10 @@ dotenv.config();
 
 // Azure SQL Configuration
 const sqlConfig: sql.config = {
-  user: process.env.SQL_USER || 'eoneval',
-  password: process.env.SQL_PASSWORD || 'ABC1234!',
-  database: process.env.SQL_DATABASE || 'eonevalsql',
-  server: process.env.SQL_SERVER || 'eoneval.database.windows.net',
+  user: process.env.SQL_USER!,
+  password: process.env.SQL_PASSWORD!,
+  database: process.env.SQL_DATABASE!,
+  server: process.env.SQL_SERVER!,
   pool: {
     max: 10,
     min: 0,
