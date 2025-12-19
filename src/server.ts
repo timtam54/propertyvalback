@@ -124,7 +124,16 @@ app.get('/api', (req: Request, res: Response) => {
 
 // Health check
 app.get('/api/health', (req: Request, res: Response) => {
-  res.json({ status: 'healthy', timestamp: new Date().toISOString() });
+  res.json({
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    env: {
+      hasOpenAI: !!process.env.OPENAI_API_KEY,
+      hasSqlServer: !!process.env.SQL_SERVER,
+      hasSqlUser: !!process.env.SQL_USER,
+      nodeEnv: process.env.NODE_ENV
+    }
+  });
 });
 
 // Admin endpoint to clear all base64 images from properties
