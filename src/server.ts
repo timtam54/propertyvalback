@@ -25,7 +25,7 @@ const PORT = process.env.PORT || 8000;
 // Parse CORS origins from environment
 const corsOrigins = process.env.CORS_ORIGINS?.split(',') || ['http://localhost:3000'];
 
-// CORS configuration - allow Vercel preview deployments
+// CORS configuration - allow Vercel and Azure deployments
 const corsOptions = {
   origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
     // Allow requests with no origin (like mobile apps or curl requests)
@@ -35,6 +35,11 @@ const corsOptions = {
 
     // Allow any vercel.app domain (for preview deployments)
     if (origin.endsWith('.vercel.app')) {
+      return callback(null, true);
+    }
+
+    // Allow any azurewebsites.net domain (for Azure deployments)
+    if (origin.endsWith('.azurewebsites.net')) {
       return callback(null, true);
     }
 
@@ -59,7 +64,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   const origin = req.headers.origin;
 
   // Set CORS headers for all responses
-  if (origin && (origin.endsWith('.vercel.app') || corsOrigins.includes(origin))) {
+  if (origin && (origin.endsWith('.vercel.app') || origin.endsWith('.azurewebsites.net') || corsOrigins.includes(origin))) {
     res.setHeader('Access-Control-Allow-Origin', origin);
   } else if (!origin) {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -166,8 +171,8 @@ connectToDatabase().catch(err => {
 // Export for Vercel serverless
 export default app;
 
-// Start server only when running locally (not on Vercel)
-if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+// Start server when NOT on Vercel (works for local dev AND Azure)
+if (!process.env.VERCEL) {
   app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
     console.log(`CORS enabled for: ${corsOrigins.join(', ')}`);
