@@ -29,7 +29,7 @@ router.get('/', async (req: Request, res: Response) => {
       };
 
       await collection.insertOne(defaultWeights);
-      weights = defaultWeights;
+      weights = await collection.findOne({ id: defaultWeights.id });
       console.log('[Historic Sales Weights] Created default weights');
     }
 
