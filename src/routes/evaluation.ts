@@ -134,7 +134,7 @@ async function generateEvaluationWithAI(
   const openaiKey = process.env.OPENAI_API_KEY;
 
   if (!openaiKey) {
-    return generateBasicReport(propertyData, comparablesData, pricePerSqm);
+    throw new Error('OPENAI_API_KEY environment variable is not set');
   }
 
   try {
