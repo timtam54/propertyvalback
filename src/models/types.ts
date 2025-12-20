@@ -353,13 +353,15 @@ export interface HistoricSalesWeights {
   density_house_to_subdivision_penalty: number; // Penalty for house vs townhouse/villa mismatch (default: 20)
 
   // Distance-based adjustments (in km)
-  distance_very_close_bonus: number;      // Bonus for < 500m (default: 10)
+  distance_ultra_close_bonus: number;     // Bonus for < 200m (default: 40)
+  distance_ultra_close_threshold_km: number;
+  distance_very_close_bonus: number;      // Bonus for 200-350m (default: 30)
   distance_very_close_threshold_km: number;
-  distance_close_bonus: number;           // Bonus for 500m-1km (default: 5)
+  distance_close_bonus: number;           // Bonus for 350-500m (default: 15)
   distance_close_threshold_km: number;
-  distance_moderate_penalty: number;      // Penalty for 2-3km (default: 8)
+  distance_moderate_penalty: number;      // Penalty for 500m-1km (default: 8)
   distance_moderate_threshold_km: number;
-  distance_far_penalty: number;           // Penalty for 3-5km (default: 15)
+  distance_far_penalty: number;           // Penalty for 1-2km (default: 15)
   distance_far_threshold_km: number;
   distance_very_far_penalty: number;      // Penalty for > 5km (default: 25)
   distance_very_far_threshold_km: number;
@@ -401,14 +403,16 @@ export const DEFAULT_HISTORIC_SALES_WEIGHTS: Omit<HistoricSalesWeights, 'id' | '
   density_house_to_unit_penalty: 40,
   density_house_to_subdivision_penalty: 20,
 
-  distance_very_close_bonus: 10,
-  distance_very_close_threshold_km: 0.5,
-  distance_close_bonus: 5,
-  distance_close_threshold_km: 1,
+  distance_ultra_close_bonus: 40,
+  distance_ultra_close_threshold_km: 0.2,
+  distance_very_close_bonus: 30,
+  distance_very_close_threshold_km: 0.35,
+  distance_close_bonus: 15,
+  distance_close_threshold_km: 0.5,
   distance_moderate_penalty: 8,
-  distance_moderate_threshold_km: 2,
+  distance_moderate_threshold_km: 1,
   distance_far_penalty: 15,
-  distance_far_threshold_km: 3,
+  distance_far_threshold_km: 2,
   distance_very_far_penalty: 25,
   distance_very_far_threshold_km: 5,
 
