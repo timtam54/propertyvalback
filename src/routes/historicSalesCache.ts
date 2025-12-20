@@ -3,7 +3,7 @@ import { queryOne, queryMany, execute, query } from '../utils/database';
 
 const router = Router();
 
-const CACHE_DURATION_DAYS = 7;
+const CACHE_DURATION_DAYS = 14; // 2 weeks
 
 interface CacheEntry {
   id: number;

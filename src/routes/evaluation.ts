@@ -144,7 +144,8 @@ async function generateEvaluationWithAI(
     if (comparablesData?.comparable_sold?.length > 0) {
       comparablesText = 'COMPARABLE SOLD PROPERTIES:\n';
       for (const comp of comparablesData.comparable_sold.slice(0, 5)) {
-        comparablesText += `- ${comp.address}: $${comp.price?.toLocaleString() || 'N/A'} | ${comp.beds || 'N/A'} bed, ${comp.baths || 'N/A'} bath | Sold: ${comp.sold_date || 'Recently'}\n`;
+        const landAreaText = comp.land_area ? `${comp.land_area}m²` : 'N/A';
+        comparablesText += `- ${comp.address}: $${comp.price?.toLocaleString() || 'N/A'} | ${comp.beds || 'N/A'} bed, ${comp.baths || 'N/A'} bath, ${landAreaText} land | Sold: ${comp.sold_date || 'Recently'}\n`;
       }
     }
 
@@ -160,19 +161,43 @@ MARKET STATISTICS (${stats.total_found || 0} comparable properties):
 `;
     }
 
+    // Calculate time since each comparable sale for time adjustment context
+    const today = new Date();
+
     const prompt = `You are an expert Australian property valuer. Generate a detailed property valuation report.
 
 SUBJECT PROPERTY:
 - Address/Location: ${propertyData.location}
 - Type: ${propertyData.property_type || 'House'}
 - Configuration: ${propertyData.beds} bed, ${propertyData.baths} bath, ${propertyData.carpark} car
-- Size: ${propertyData.size || 'Not specified'} sqm
+- Land Size: ${propertyData.size || 'Not specified'} sqm
 - Asking Price: ${propertyData.price ? `$${propertyData.price.toLocaleString()}` : 'Not specified'}
-- Features: ${propertyData.features || 'Standard'}
+- Features/Condition: ${propertyData.features || 'Standard'}
+- Today's Date: ${today.toLocaleDateString('en-AU', { day: 'numeric', month: 'long', year: 'numeric' })}
 
 ${comparablesText}
 
 ${statsText}
+
+IMPORTANT VALUATION ADJUSTMENTS:
+You MUST adjust comparable sale prices for differences between the comparable and the subject property:
+
+1. **TIME ADJUSTMENT**: Property markets typically appreciate. Adjust older sales upward:
+   - Sales 6-12 months ago: add ~3-5%
+   - Sales 12-18 months ago: add ~5-8%
+   - Sales 18-24 months ago: add ~8-12%
+
+2. **LAND SIZE ADJUSTMENT**: Larger land = higher value. Calculate $/sqm from comparables:
+   - If subject has MORE land than comparable, ADD value
+   - If subject has LESS land than comparable, SUBTRACT value
+   - Typical land value: $500-2000/sqm depending on area
+
+3. **QUALITY/CONDITION ADJUSTMENT**:
+   - Newer build/recent renovation: add 5-15%
+   - Better views/position: add 5-10%
+   - Superior finishes: add 5-10%
+
+4. **NEVER value a SUPERIOR property LOWER than an INFERIOR comparable** - this is a fundamental valuation error.
 
 Provide:
 ### Estimated Value Range
@@ -180,8 +205,11 @@ Provide:
 - Market Value: $Y
 - Premium/Well-Presented: $Z
 
+### Adjustment Analysis
+Show your workings - how you adjusted each comparable sale price to estimate the subject property value.
+
 ### Comparable Sales Analysis
-Reference specific recent sales with addresses and prices.
+Reference specific recent sales with addresses, prices, and the adjustments you applied.
 
 ### Market Insights
 - Current buyer demand
