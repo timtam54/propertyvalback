@@ -17,6 +17,8 @@ export interface User {
   // OAuth fields
   auth_provider?: 'local' | 'google' | 'microsoft' | 'oauth' | null;
   picture?: string | null;
+  // Admin flag
+  admin?: boolean | null;
 }
 
 export interface UserSignup {

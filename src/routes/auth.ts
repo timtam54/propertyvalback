@@ -251,7 +251,7 @@ router.get('/users', async (req: Request, res: Response) => {
     const users = await queryMany<User>(
       `SELECT id, email, username, subscription_tier, subscription_active, subscription_end_date,
               trial_active, trial_end_date, stripe_customer_id, stripe_subscription_id,
-              created_at, last_login, is_active, auth_provider, picture
+              created_at, last_login, is_active, auth_provider, picture, admin
        FROM users
        ORDER BY last_login DESC`
     );
