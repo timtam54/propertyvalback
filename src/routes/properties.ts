@@ -142,10 +142,10 @@ router.post('/', async (req: Request, res: Response) => {
     await execute(
       `INSERT INTO properties (id, beds, baths, carpark, location, price, size, property_type, features,
         strata_body_corps, council_rates, images, agent1_name, agent1_phone, agent2_name, agent2_phone,
-        agent_email, agency_id, user_email, created_at, status)
+        agent_email, agency_id, user_email, created_at, status, neighbouring_suburb, neighbouring_postcode, neighbouring_state)
        VALUES (@id, @beds, @baths, @carpark, @location, @price, @size, @property_type, @features,
         @strata_body_corps, @council_rates, @images, @agent1_name, @agent1_phone, @agent2_name, @agent2_phone,
-        @agent_email, @agency_id, @user_email, @created_at, 'active')`,
+        @agent_email, @agency_id, @user_email, @created_at, 'active', @neighbouring_suburb, @neighbouring_postcode, @neighbouring_state)`,
       {
         id: propertyId,
         beds: propertyData.beds || null,
@@ -166,7 +166,10 @@ router.post('/', async (req: Request, res: Response) => {
         agent_email: propertyData.agent_email || null,
         agency_id: 'default_agency',
         user_email: userEmail || propertyData.user_email || null,
-        created_at: now
+        created_at: now,
+        neighbouring_suburb: propertyData.neighbouring_suburb || null,
+        neighbouring_postcode: propertyData.neighbouring_postcode || null,
+        neighbouring_state: propertyData.neighbouring_state || null
       }
     );
 
@@ -313,7 +316,8 @@ router.put('/:propertyId', async (req: Request, res: Response) => {
         price = @price, size = @size, property_type = @property_type, features = @features,
         strata_body_corps = @strata_body_corps, council_rates = @council_rates, images = @images,
         agent1_name = @agent1_name, agent1_phone = @agent1_phone, agent2_name = @agent2_name,
-        agent2_phone = @agent2_phone, agent_email = @agent_email
+        agent2_phone = @agent2_phone, agent_email = @agent_email,
+        neighbouring_suburb = @neighbouring_suburb, neighbouring_postcode = @neighbouring_postcode, neighbouring_state = @neighbouring_state
        WHERE id = @id`,
       {
         id: propertyId,
@@ -332,7 +336,10 @@ router.put('/:propertyId', async (req: Request, res: Response) => {
         agent1_phone: updateData.agent1_phone ?? property.agent1_phone,
         agent2_name: updateData.agent2_name ?? property.agent2_name,
         agent2_phone: updateData.agent2_phone ?? property.agent2_phone,
-        agent_email: updateData.agent_email ?? property.agent_email
+        agent_email: updateData.agent_email ?? property.agent_email,
+        neighbouring_suburb: updateData.neighbouring_suburb ?? property.neighbouring_suburb,
+        neighbouring_postcode: updateData.neighbouring_postcode ?? property.neighbouring_postcode,
+        neighbouring_state: updateData.neighbouring_state ?? property.neighbouring_state
       }
     );
 

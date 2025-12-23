@@ -42,7 +42,7 @@ router.get('/all', async (req: Request, res: Response) => {
   try {
     // Get cache entries with property counts from historic_prop table
     const entries = await queryMany<CacheEntry & { total: number }>(
-      `SELECT c.*, COUNT(hp.id) as total
+      `SELECT c.id, c.cache_key, c.cached_at, c.postcode, c.property_type, COUNT(hp.id) as total
        FROM historic_sales_cache c
        LEFT JOIN historic_prop hp ON c.id = hp.cache_id
        GROUP BY c.id, c.cache_key, c.cached_at, c.postcode, c.property_type

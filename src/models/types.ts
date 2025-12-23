@@ -170,6 +170,10 @@ export interface Property {
   selected_comparables?: string[];
   is_favourite?: boolean;
   tags?: string[] | null;
+  // Neighbouring suburb for additional comparables
+  neighbouring_suburb?: string | null;
+  neighbouring_postcode?: string | null;
+  neighbouring_state?: string | null;
 }
 
 export interface PropertyCreate {
@@ -192,6 +196,9 @@ export interface PropertyCreate {
   user_email?: string | null;
   rp_data_report?: string | null;
   additional_report?: string | null;
+  neighbouring_suburb?: string | null;
+  neighbouring_postcode?: string | null;
+  neighbouring_state?: string | null;
 }
 
 // Agent types
