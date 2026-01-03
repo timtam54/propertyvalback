@@ -174,6 +174,8 @@ export interface Property {
   neighbouring_suburb?: string | null;
   neighbouring_postcode?: string | null;
   neighbouring_state?: string | null;
+  // Estimated value range from valuation (RP Data or Homely)
+  estimated_value_range?: string | null;
 }
 
 export interface PropertyCreate {

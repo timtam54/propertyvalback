@@ -365,7 +365,7 @@ router.patch('/:propertyId', async (req: Request, res: Response) => {
     const { propertyId } = req.params;
     const updateData = req.body;
 
-    const allowedFields = ['latitude', 'longitude', 'status', 'is_favourite', 'tags'];
+    const allowedFields = ['latitude', 'longitude', 'status', 'is_favourite', 'tags', 'estimated_value_range'];
     const updates: string[] = [];
     const params: Record<string, any> = { id: propertyId };
 
@@ -410,8 +410,8 @@ router.patch('/:propertyId', async (req: Request, res: Response) => {
 
     res.json(updated);
   } catch (error: any) {
-    console.error('Patch property error:', error);
-    res.status(500).json({ detail: 'Failed to patch property' });
+    console.error('Patch property error:', error.message || error);
+    res.status(500).json({ detail: 'Failed to patch property: ' + (error.message || 'Unknown error') });
   }
 });
 
@@ -600,6 +600,44 @@ router.post('/:propertyId/save-evaluation', async (req: Request, res: Response) 
       return;
     }
 
+    // Extract estimated value range from evaluation report
+    // Look for patterns like "$X - $Y", "$X to $Y", or "Estimated Value Range" section
+    let estimated_value_range: string | null = null;
+
+    // Pattern 1: Look for "Estimated Value Range" section with price range
+    const estimatedValueMatch = evaluation_report.match(/estimated value range[^$]*(\$[\d,]+\s*[-–to]+\s*\$[\d,]+)/i);
+    if (estimatedValueMatch) {
+      estimated_value_range = estimatedValueMatch[1].replace(/\s+/g, ' ').trim();
+    }
+
+    // Pattern 2: Look for "value range is $X - $Y" or similar
+    if (!estimated_value_range) {
+      const valueRangeMatch = evaluation_report.match(/value range[^$]*is[^$]*(\$[\d,]+\s*[-–to]+\s*\$[\d,]+)/i);
+      if (valueRangeMatch) {
+        estimated_value_range = valueRangeMatch[1].replace(/\s+/g, ' ').trim();
+      }
+    }
+
+    // Pattern 3: Look for RP Data estimated value pattern
+    if (!estimated_value_range) {
+      const rpDataMatch = evaluation_report.match(/RP Data[^$]*(\$[\d,]+\s*[-–to]+\s*\$[\d,]+)/i);
+      if (rpDataMatch) {
+        estimated_value_range = rpDataMatch[1].replace(/\s+/g, ' ').trim();
+      }
+    }
+
+    // Pattern 4: Look for any price range in the format "$X - $Y" or "$X to $Y"
+    if (!estimated_value_range) {
+      const priceRangeMatch = evaluation_report.match(/(\$[\d,]+(?:,\d{3})*)\s*[-–to]+\s*(\$[\d,]+(?:,\d{3})*)/i);
+      if (priceRangeMatch) {
+        estimated_value_range = `${priceRangeMatch[1]} - ${priceRangeMatch[2]}`;
+      }
+    }
+
+    if (estimated_value_range) {
+      console.log(`[SaveEvaluation] Extracted estimated value range: ${estimated_value_range}`);
+    }
+
     const valuation_history = valuation_entry ? JSON.stringify([valuation_entry]) : null;
 
     const rowsAffected = await execute(
@@ -609,6 +647,7 @@ router.post('/:propertyId/save-evaluation', async (req: Request, res: Response) 
         comparables_data = @comparables_data,
         confidence_scoring = @confidence_scoring,
         valuation_history = @valuation_history,
+        estimated_value_range = @estimated_value_range,
         improvements_detected = NULL,
         evaluation_ad = NULL
        WHERE id = @id`,
@@ -618,6 +657,7 @@ router.post('/:propertyId/save-evaluation', async (req: Request, res: Response) 
         comparables_data: comparables_data ? JSON.stringify(comparables_data) : null,
         confidence_scoring: confidence_scoring ? JSON.stringify(confidence_scoring) : null,
         valuation_history,
+        estimated_value_range,
         id: propertyId
       }
     );
@@ -628,7 +668,7 @@ router.post('/:propertyId/save-evaluation', async (req: Request, res: Response) 
     }
 
     console.log(`[SaveEvaluation] Saved evaluation for property ${propertyId}`);
-    res.json({ success: true });
+    res.json({ success: true, estimated_value_range });
   } catch (error) {
     console.error('Save evaluation error:', error);
     res.status(500).json({ detail: 'Failed to save evaluation' });
