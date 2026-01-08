@@ -593,7 +593,7 @@ router.post('/:propertyId/mark-sold', async (req: Request, res: Response) => {
 router.post('/:propertyId/save-evaluation', async (req: Request, res: Response) => {
   try {
     const { propertyId } = req.params;
-    const { evaluation_report, comparables_data, confidence_scoring, valuation_entry } = req.body;
+    const { evaluation_report, comparables_data, confidence_scoring, valuation_entry, evaluation_type } = req.body;
 
     if (!evaluation_report || typeof evaluation_report !== 'string') {
       res.status(400).json({ detail: 'Evaluation report is required' });
@@ -648,6 +648,7 @@ router.post('/:propertyId/save-evaluation', async (req: Request, res: Response) 
         confidence_scoring = @confidence_scoring,
         valuation_history = @valuation_history,
         estimated_value_range = @estimated_value_range,
+        evaluation_type = @evaluation_type,
         improvements_detected = NULL,
         evaluation_ad = NULL
        WHERE id = @id`,
@@ -658,6 +659,7 @@ router.post('/:propertyId/save-evaluation', async (req: Request, res: Response) 
         confidence_scoring: confidence_scoring ? JSON.stringify(confidence_scoring) : null,
         valuation_history,
         estimated_value_range,
+        evaluation_type: evaluation_type || null,
         id: propertyId
       }
     );
