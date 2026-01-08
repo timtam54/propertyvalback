@@ -43,6 +43,16 @@ const corsOptions = {
       return callback(null, true);
     }
 
+    // Allow any azurestaticapps.net domain (for Azure Static Web Apps)
+    if (origin.endsWith('.azurestaticapps.net')) {
+      return callback(null, true);
+    }
+
+    // Allow custom domain propertyeval.com.au
+    if (origin === 'https://propertyeval.com.au' || origin === 'https://www.propertyeval.com.au') {
+      return callback(null, true);
+    }
+
     // Allow configured origins
     if (corsOrigins.includes(origin)) {
       return callback(null, true);
@@ -64,7 +74,14 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   const origin = req.headers.origin;
 
   // Set CORS headers for all responses
-  if (origin && (origin.endsWith('.vercel.app') || origin.endsWith('.azurewebsites.net') || corsOrigins.includes(origin))) {
+  if (origin && (
+    origin.endsWith('.vercel.app') ||
+    origin.endsWith('.azurewebsites.net') ||
+    origin.endsWith('.azurestaticapps.net') ||
+    origin === 'https://propertyeval.com.au' ||
+    origin === 'https://www.propertyeval.com.au' ||
+    corsOrigins.includes(origin)
+  )) {
     res.setHeader('Access-Control-Allow-Origin', origin);
   } else if (!origin) {
     res.setHeader('Access-Control-Allow-Origin', '*');
