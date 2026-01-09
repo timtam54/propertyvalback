@@ -142,10 +142,12 @@ router.post('/', async (req: Request, res: Response) => {
     await execute(
       `INSERT INTO properties (id, beds, baths, carpark, location, price, size, property_type, features,
         strata_body_corps, council_rates, images, agent1_name, agent1_phone, agent2_name, agent2_phone,
-        agent_email, agency_id, user_email, created_at, status, neighbouring_suburb, neighbouring_postcode, neighbouring_state)
+        agent_email, agency_id, user_email, created_at, status, neighbouring_suburb, neighbouring_postcode, neighbouring_state,
+        rp_data_report, additional_report, marketing_package, marketing_cost)
        VALUES (@id, @beds, @baths, @carpark, @location, @price, @size, @property_type, @features,
         @strata_body_corps, @council_rates, @images, @agent1_name, @agent1_phone, @agent2_name, @agent2_phone,
-        @agent_email, @agency_id, @user_email, @created_at, 'active', @neighbouring_suburb, @neighbouring_postcode, @neighbouring_state)`,
+        @agent_email, @agency_id, @user_email, @created_at, 'active', @neighbouring_suburb, @neighbouring_postcode, @neighbouring_state,
+        @rp_data_report, @additional_report, @marketing_package, @marketing_cost)`,
       {
         id: propertyId,
         beds: propertyData.beds || null,
@@ -169,7 +171,11 @@ router.post('/', async (req: Request, res: Response) => {
         created_at: now,
         neighbouring_suburb: propertyData.neighbouring_suburb || null,
         neighbouring_postcode: propertyData.neighbouring_postcode || null,
-        neighbouring_state: propertyData.neighbouring_state || null
+        neighbouring_state: propertyData.neighbouring_state || null,
+        rp_data_report: propertyData.rp_data_report || null,
+        additional_report: propertyData.additional_report || null,
+        marketing_package: propertyData.marketing_package || null,
+        marketing_cost: propertyData.marketing_cost || null
       }
     );
 
@@ -317,7 +323,9 @@ router.put('/:propertyId', async (req: Request, res: Response) => {
         strata_body_corps = @strata_body_corps, council_rates = @council_rates, images = @images,
         agent1_name = @agent1_name, agent1_phone = @agent1_phone, agent2_name = @agent2_name,
         agent2_phone = @agent2_phone, agent_email = @agent_email,
-        neighbouring_suburb = @neighbouring_suburb, neighbouring_postcode = @neighbouring_postcode, neighbouring_state = @neighbouring_state
+        neighbouring_suburb = @neighbouring_suburb, neighbouring_postcode = @neighbouring_postcode, neighbouring_state = @neighbouring_state,
+        rp_data_report = @rp_data_report, additional_report = @additional_report,
+        marketing_package = @marketing_package, marketing_cost = @marketing_cost
        WHERE id = @id`,
       {
         id: propertyId,
@@ -339,7 +347,11 @@ router.put('/:propertyId', async (req: Request, res: Response) => {
         agent_email: updateData.agent_email ?? property.agent_email,
         neighbouring_suburb: updateData.neighbouring_suburb ?? property.neighbouring_suburb,
         neighbouring_postcode: updateData.neighbouring_postcode ?? property.neighbouring_postcode,
-        neighbouring_state: updateData.neighbouring_state ?? property.neighbouring_state
+        neighbouring_state: updateData.neighbouring_state ?? property.neighbouring_state,
+        rp_data_report: updateData.rp_data_report ?? property.rp_data_report,
+        additional_report: updateData.additional_report ?? property.additional_report,
+        marketing_package: updateData.marketing_package ?? property.marketing_package,
+        marketing_cost: updateData.marketing_cost ?? property.marketing_cost
       }
     );
 
@@ -365,7 +377,7 @@ router.patch('/:propertyId', async (req: Request, res: Response) => {
     const { propertyId } = req.params;
     const updateData = req.body;
 
-    const allowedFields = ['latitude', 'longitude', 'status', 'is_favourite', 'tags', 'estimated_value_range'];
+    const allowedFields = ['latitude', 'longitude', 'status', 'is_favourite', 'tags', 'estimated_value_range', 'rp_data_report', 'additional_report', 'rp_data_upload_date'];
     const updates: string[] = [];
     const params: Record<string, any> = { id: propertyId };
 
@@ -554,6 +566,34 @@ router.put('/:propertyId/update-rp-data', async (req: Request, res: Response) =>
   } catch (error) {
     console.error('Update RP data error:', error);
     res.status(500).json({ detail: 'Failed to update RP data' });
+  }
+});
+
+// PUT /api/properties/:propertyId/update-additional-report
+router.put('/:propertyId/update-additional-report', async (req: Request, res: Response) => {
+  try {
+    const { propertyId } = req.params;
+    const { report } = req.body;
+
+    if (!report || typeof report !== 'string') {
+      res.status(400).json({ detail: 'Report content is required' });
+      return;
+    }
+
+    const rowsAffected = await execute(
+      `UPDATE properties SET additional_report = @report WHERE id = @id`,
+      { report, id: propertyId }
+    );
+
+    if (rowsAffected === 0) {
+      res.status(404).json({ detail: 'Property not found' });
+      return;
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Update additional report error:', error);
+    res.status(500).json({ detail: 'Failed to update additional report' });
   }
 });
 

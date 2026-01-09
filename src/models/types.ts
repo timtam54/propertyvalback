@@ -201,6 +201,8 @@ export interface PropertyCreate {
   neighbouring_suburb?: string | null;
   neighbouring_postcode?: string | null;
   neighbouring_state?: string | null;
+  marketing_package?: string | null;
+  marketing_cost?: number | null;
 }
 
 // Agent types
