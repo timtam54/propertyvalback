@@ -640,42 +640,27 @@ router.post('/:propertyId/save-evaluation', async (req: Request, res: Response) 
       return;
     }
 
-    // Extract estimated value range from evaluation report
-    // Look for patterns like "$X - $Y", "$X to $Y", or "Estimated Value Range" section
+    // Use the valuation_entry values that were already correctly extracted from the
+    // "Estimated Value Range" section by the frontend evaluate API route.
+    // This ensures consistency between what's displayed and what's saved.
     let estimated_value_range: string | null = null;
 
-    // Pattern 1: Look for "Estimated Value Range" section with price range
-    const estimatedValueMatch = evaluation_report.match(/estimated value range[^$]*(\$[\d,]+\s*[-–to]+\s*\$[\d,]+)/i);
-    if (estimatedValueMatch) {
-      estimated_value_range = estimatedValueMatch[1].replace(/\s+/g, ' ').trim();
-    }
-
-    // Pattern 2: Look for "value range is $X - $Y" or similar
-    if (!estimated_value_range) {
-      const valueRangeMatch = evaluation_report.match(/value range[^$]*is[^$]*(\$[\d,]+\s*[-–to]+\s*\$[\d,]+)/i);
-      if (valueRangeMatch) {
-        estimated_value_range = valueRangeMatch[1].replace(/\s+/g, ' ').trim();
+    if (valuation_entry?.value_low && valuation_entry?.value_high) {
+      // Format as "$X - $Y" using the pre-extracted values
+      const formatPrice = (price: number) => '$' + price.toLocaleString();
+      estimated_value_range = `${formatPrice(valuation_entry.value_low)} - ${formatPrice(valuation_entry.value_high)}`;
+      console.log(`[SaveEvaluation] Using valuation_entry values: ${estimated_value_range}`);
+    } else {
+      // Fallback: Find "## X. Estimated Value Range" section, then extract value after "estimated value range" text
+      const sectionMatch = evaluation_report.match(/##\s*\d+\.?\s*Estimated Value Range\s*\n([\s\S]*?)(?=##|$)/i);
+      if (sectionMatch) {
+        const sectionContent = sectionMatch[1];
+        const rangeMatch = sectionContent.match(/estimated value range[^$]*\$\s*([\d,]+)\s*(?:to|-|–|and)\s*\$\s*([\d,]+)/i);
+        if (rangeMatch) {
+          estimated_value_range = `$${rangeMatch[1]} - $${rangeMatch[2]}`;
+          console.log(`[SaveEvaluation] Extracted from section: ${estimated_value_range}`);
+        }
       }
-    }
-
-    // Pattern 3: Look for RP Data estimated value pattern
-    if (!estimated_value_range) {
-      const rpDataMatch = evaluation_report.match(/RP Data[^$]*(\$[\d,]+\s*[-–to]+\s*\$[\d,]+)/i);
-      if (rpDataMatch) {
-        estimated_value_range = rpDataMatch[1].replace(/\s+/g, ' ').trim();
-      }
-    }
-
-    // Pattern 4: Look for any price range in the format "$X - $Y" or "$X to $Y"
-    if (!estimated_value_range) {
-      const priceRangeMatch = evaluation_report.match(/(\$[\d,]+(?:,\d{3})*)\s*[-–to]+\s*(\$[\d,]+(?:,\d{3})*)/i);
-      if (priceRangeMatch) {
-        estimated_value_range = `${priceRangeMatch[1]} - ${priceRangeMatch[2]}`;
-      }
-    }
-
-    if (estimated_value_range) {
-      console.log(`[SaveEvaluation] Extracted estimated value range: ${estimated_value_range}`);
     }
 
     const valuation_history = valuation_entry ? JSON.stringify([valuation_entry]) : null;
