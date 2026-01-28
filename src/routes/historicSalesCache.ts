@@ -144,10 +144,16 @@ router.get('/nsw-data', async (req: Request, res: Response) => {
       params.postcode = postcodeStr;
     }
 
-    // Filter by property type if provided
+    // Filter by property type if provided (handle singular/plural mismatch)
     if (propertyType && propertyType !== 'all') {
-      query += ` AND LOWER(hp.property_type) = @propertyType`;
-      params.propertyType = (propertyType as string).toLowerCase();
+      // Normalize property type - remove trailing 's' for plural forms
+      let normalizedType = (propertyType as string).toLowerCase();
+      if (normalizedType.endsWith('s') && normalizedType !== 'units') {
+        normalizedType = normalizedType.slice(0, -1); // houses -> house
+      }
+      query += ` AND (LOWER(hp.property_type) = @propertyType OR LOWER(hp.property_type) = @propertyTypePlural)`;
+      params.propertyType = normalizedType;
+      params.propertyTypePlural = normalizedType + 's';
     }
 
     query += ` ORDER BY hp.sold_date_raw DESC`;
