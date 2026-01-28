@@ -7,14 +7,36 @@ import OpenAI from 'openai';
 import { getComparableProperties } from '../services/domainApi';
 import multer from 'multer';
 import { extractText } from 'unpdf';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const pdfParse = require('pdf-parse');
 
 async function extractPdfText(buffer: Buffer): Promise<string> {
-  const uint8Array = new Uint8Array(buffer);
-  const { text } = await extractText(uint8Array);
-  if (Array.isArray(text)) {
-    return text.join('\n');
+  // Try unpdf first (better for modern PDFs)
+  try {
+    const uint8Array = new Uint8Array(buffer);
+    const { text } = await extractText(uint8Array);
+    const result = Array.isArray(text) ? text.join('\n') : String(text);
+    if (result && result.trim()) {
+      console.log('[extractPdfText] unpdf succeeded, extracted', result.length, 'chars');
+      return result;
+    }
+  } catch (unpdfError: any) {
+    console.log('[extractPdfText] unpdf failed:', unpdfError?.message);
   }
-  return String(text);
+
+  // Fallback to pdf-parse (better for some PDF types)
+  try {
+    const data = await pdfParse(buffer);
+    if (data.text && data.text.trim()) {
+      console.log('[extractPdfText] pdf-parse succeeded, extracted', data.text.length, 'chars');
+      return data.text;
+    }
+  } catch (pdfParseError: any) {
+    console.log('[extractPdfText] pdf-parse failed:', pdfParseError?.message);
+  }
+
+  // Both failed
+  throw new Error('Could not extract text from PDF using any method');
 }
 
 const router = Router();
@@ -232,29 +254,44 @@ router.get('/', async (req: Request, res: Response) => {
 // POST /api/properties/extract-pdf-text
 router.post('/extract-pdf-text', upload.single('file'), async (req: Request, res: Response) => {
   try {
+    console.log('[extract-pdf-text] Request received');
+
     if (!req.file) {
-      res.status(400).json({ detail: 'PDF file is required' });
+      console.log('[extract-pdf-text] No file in request');
+      res.status(400).json({ detail: 'PDF file is required', error_code: 'NO_FILE' });
       return;
     }
+
+    console.log(`[extract-pdf-text] File received: ${req.file.originalname}, size: ${req.file.size} bytes, mimetype: ${req.file.mimetype}`);
 
     let pdfText = '';
     try {
       pdfText = await extractPdfText(req.file.buffer);
-    } catch (parseError) {
-      console.error('PDF parsing error:', parseError);
-      res.status(400).json({ detail: 'Could not extract text from PDF.' });
+      console.log(`[extract-pdf-text] Extracted ${pdfText.length} characters`);
+    } catch (parseError: any) {
+      console.error('[extract-pdf-text] PDF parsing error:', parseError?.message || parseError);
+      console.error('[extract-pdf-text] Error stack:', parseError?.stack);
+      res.status(400).json({
+        detail: `Could not extract text from PDF: ${parseError?.message || 'Unknown parsing error'}`,
+        error_code: 'PARSE_ERROR'
+      });
       return;
     }
 
     if (!pdfText || pdfText.trim() === '') {
-      res.status(400).json({ detail: 'Could not extract text from PDF.' });
+      console.log('[extract-pdf-text] No text extracted from PDF');
+      res.status(400).json({
+        detail: 'PDF appears to be empty or contains only images (scanned documents). Please paste the text directly instead.',
+        error_code: 'EMPTY_TEXT'
+      });
       return;
     }
 
     res.json({ success: true, text: pdfText });
-  } catch (error) {
-    console.error('Extract PDF text error:', error);
-    res.status(500).json({ detail: 'Failed to extract text from PDF' });
+  } catch (error: any) {
+    console.error('[extract-pdf-text] Unexpected error:', error?.message || error);
+    console.error('[extract-pdf-text] Error stack:', error?.stack);
+    res.status(500).json({ detail: 'Failed to extract text from PDF', error_code: 'SERVER_ERROR' });
   }
 });
 
@@ -594,6 +631,61 @@ router.put('/:propertyId/update-additional-report', async (req: Request, res: Re
   } catch (error) {
     console.error('Update additional report error:', error);
     res.status(500).json({ detail: 'Failed to update additional report' });
+  }
+});
+
+// POST /api/properties/:propertyId/upload-additional-report-pdf
+router.post('/:propertyId/upload-additional-report-pdf', upload.single('file'), async (req: Request, res: Response) => {
+  try {
+    const { propertyId } = req.params;
+    console.log(`[upload-additional-report-pdf] Request for property ${propertyId}`);
+
+    if (!req.file) {
+      console.log('[upload-additional-report-pdf] No file in request');
+      res.status(400).json({ detail: 'PDF file is required', error_code: 'NO_FILE' });
+      return;
+    }
+
+    console.log(`[upload-additional-report-pdf] File received: ${req.file.originalname}, size: ${req.file.size} bytes`);
+
+    let pdfText = '';
+    try {
+      pdfText = await extractPdfText(req.file.buffer);
+      console.log(`[upload-additional-report-pdf] Extracted ${pdfText.length} characters`);
+    } catch (parseError: any) {
+      console.error('[upload-additional-report-pdf] PDF parsing error:', parseError?.message);
+      res.status(400).json({
+        detail: `Could not extract text from PDF: ${parseError?.message || 'Unknown parsing error'}`,
+        error_code: 'PARSE_ERROR'
+      });
+      return;
+    }
+
+    if (!pdfText || pdfText.trim() === '') {
+      console.log('[upload-additional-report-pdf] No text extracted');
+      res.status(400).json({
+        detail: 'PDF appears to be empty or contains only images. Please paste the text directly instead.',
+        error_code: 'EMPTY_TEXT'
+      });
+      return;
+    }
+
+    // Save the extracted text to the property
+    const rowsAffected = await execute(
+      `UPDATE properties SET additional_report = @report WHERE id = @id`,
+      { report: pdfText, id: propertyId }
+    );
+
+    if (rowsAffected === 0) {
+      res.status(404).json({ detail: 'Property not found' });
+      return;
+    }
+
+    console.log(`[upload-additional-report-pdf] Saved report for property ${propertyId}`);
+    res.json({ success: true, text: pdfText });
+  } catch (error: any) {
+    console.error('[upload-additional-report-pdf] Unexpected error:', error?.message);
+    res.status(500).json({ detail: 'Failed to process PDF' });
   }
 });
 

@@ -22,7 +22,8 @@
     "pdf-parse": "^2.4.5",
     "stripe": "^14.10.0",
     "unpdf": "^1.4.0",
-    "uuid": "^9.0.1"
+    "uuid": "^9.0.1",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",

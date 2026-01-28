@@ -111,6 +111,99 @@ router.get('/all', async (req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/historic-sales-cache/nsw-data
+ * Get NSW Valuer General imported data for a suburb (no expiry - official data)
+ */
+router.get('/nsw-data', async (req: Request, res: Response) => {
+  try {
+    const { suburb, postcode, propertyType } = req.query;
+
+    if (!suburb) {
+      return res.status(400).json({ detail: 'Missing required parameter: suburb' });
+    }
+
+    const suburbLower = (suburb as string).toLowerCase().trim();
+    const postcodeStr = postcode ? (postcode as string).trim() : null;
+
+    // Query historic_prop directly for nsw-valuer-general source
+    // Match by source_suburb (case-insensitive) or by address containing the suburb
+    let query = `
+      SELECT hp.*
+      FROM historic_prop hp
+      WHERE hp.source = 'nsw-valuer-general'
+        AND (
+          LOWER(hp.source_suburb) = @suburb
+          OR LOWER(hp.address) LIKE '%' + @suburb + '%'
+        )
+    `;
+    const params: any = { suburb: suburbLower };
+
+    // Filter by postcode if provided
+    if (postcodeStr) {
+      query += ` AND hp.address LIKE '%' + @postcode + '%'`;
+      params.postcode = postcodeStr;
+    }
+
+    // Filter by property type if provided
+    if (propertyType && propertyType !== 'all') {
+      query += ` AND LOWER(hp.property_type) = @propertyType`;
+      params.propertyType = (propertyType as string).toLowerCase();
+    }
+
+    query += ` ORDER BY hp.sold_date_raw DESC`;
+
+    const props = await queryMany<HistoricProp>(query, params);
+
+    if (props.length === 0) {
+      console.log(`[NSW Data] No NSW Valuer General data found for suburb: ${suburbLower}`);
+      return res.json({
+        found: false,
+        suburb: suburbLower,
+        state: 'nsw',
+        postcode: postcodeStr,
+        sales: [],
+        total: 0
+      });
+    }
+
+    const sales = props.map(p => ({
+      id: p.prop_id,
+      address: p.address,
+      price: p.price,
+      beds: p.beds,
+      baths: p.baths,
+      cars: p.cars,
+      land_area: p.land_area,
+      property_type: p.property_type,
+      sold_date: p.sold_date,
+      sold_date_raw: p.sold_date_raw,
+      source: p.source,
+      latitude: p.latitude,
+      longitude: p.longitude,
+      homely_url: p.homely_url,
+      source_suburb: p.source_suburb,
+      is_neighbouring: p.is_neighbouring
+    }));
+
+    console.log(`[NSW Data] Found ${sales.length} NSW Valuer General records for ${suburbLower}`);
+
+    return res.json({
+      found: true,
+      suburb: suburbLower,
+      state: 'nsw',
+      postcode: postcodeStr,
+      sales,
+      total: sales.length,
+      source: 'nsw-valuer-general'
+    });
+  } catch (error) {
+    console.error('NSW data GET error:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    return res.status(500).json({ detail: 'Failed to fetch NSW data: ' + errorMessage });
+  }
+});
+
+/**
  * GET /api/historic-sales-cache
  * Check for cached historic sales data
  */

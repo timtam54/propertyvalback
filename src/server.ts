@@ -18,6 +18,7 @@ import portfolioRoutes from './routes/portfolio';
 import auditRoutes from './routes/audit';
 import historicSalesCacheRoutes from './routes/historicSalesCache';
 import historicSalesWeightsRoutes from './routes/historicSalesWeights';
+import nswSalesImportRoutes from './routes/nswSalesImport';
 
 const app = express();
 const PORT = process.env.PORT || 8000;
@@ -129,6 +130,7 @@ app.use('/api/portfolio', portfolioRoutes);
 app.use('/api/audit', auditRoutes);
 app.use('/api/historic-sales-cache', historicSalesCacheRoutes);
 app.use('/api/historic-sales-weights', historicSalesWeightsRoutes);
+app.use('/api/nsw-sales', nswSalesImportRoutes);
 
 // Root route
 app.get('/', (req: Request, res: Response) => {
