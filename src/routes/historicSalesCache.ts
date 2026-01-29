@@ -36,67 +36,64 @@ interface HistoricProp {
 
 /**
  * GET /api/historic-sales-cache/all
- * List all cached searches (for admin dashboard)
+ * List cached searches (for admin dashboard)
+ * Supports search by suburb/postcode and limiting results
+ * Does NOT return properties - use /properties/:cacheId endpoint for that
  */
 router.get('/all', async (req: Request, res: Response) => {
   try {
+    const { search, limit } = req.query;
+    const searchTerm = search ? (search as string).toLowerCase().trim() : null;
+    const resultLimit = Math.min(Math.max(1, limit ? parseInt(limit as string, 10) : 50), 50); // Default 50, max 50
+
     // Get cache entries with property counts from historic_prop table
-    const entries = await queryMany<CacheEntry & { total: number }>(
-      `SELECT c.id, c.cache_key, c.cached_at, c.postcode, c.property_type, COUNT(hp.id) as total
-       FROM historic_sales_cache c
-       LEFT JOIN historic_prop hp ON c.id = hp.cache_id
-       GROUP BY c.id, c.cache_key, c.cached_at, c.postcode, c.property_type
-       ORDER BY c.cached_at DESC`
-    );
+    const params: any = {};
+
+    let whereClause = '';
+    if (searchTerm) {
+      // Use parameterized LIKE pattern for MSSQL
+      whereClause = `WHERE (LOWER(c.cache_key) LIKE @searchPattern OR c.postcode LIKE @searchPattern)`;
+      params.searchPattern = `%${searchTerm}%`;
+    }
+
+    const entriesQuery = `
+      SELECT TOP ${resultLimit} c.id, c.cache_key, c.cached_at, c.postcode, c.property_type, COUNT(hp.id) as total
+      FROM historic_sales_cache c
+      LEFT JOIN historic_prop hp ON c.id = hp.cache_id
+      ${whereClause}
+      GROUP BY c.id, c.cache_key, c.cached_at, c.postcode, c.property_type
+      ORDER BY c.cached_at DESC
+    `;
+
+    console.log(`[Historic Sales Cache] Query: search="${searchTerm}", limit=${resultLimit}, whereClause="${whereClause}"`);
+    const entries = await queryMany<CacheEntry & { total: number }>(entriesQuery, params);
+    console.log(`[Historic Sales Cache] Found ${entries.length} entries`);
 
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - CACHE_DURATION_DAYS);
 
-    // Get properties for each cache entry
-    const searches = await Promise.all(entries.map(async entry => {
-      const props = await queryMany<HistoricProp>(
-        `SELECT * FROM historic_prop WHERE cache_id = @cacheId ORDER BY sold_date_raw DESC`,
-        { cacheId: entry.id }
-      );
-
+    // Map entries without fetching properties (for performance)
+    const searches = entries.map(entry => {
       // Extract suburb and state from cache_key (format: suburb-state-postcode-type)
       const parts = entry.cache_key.split('-');
       const suburb = parts[0] || '';
       const state = parts[1] || '';
 
-      const sales = props.map(p => ({
-        id: p.prop_id,
-        address: p.address,
-        price: p.price,
-        beds: p.beds,
-        baths: p.baths,
-        cars: p.cars,
-        land_area: p.land_area,
-        property_type: p.property_type,
-        sold_date: p.sold_date,
-        sold_date_raw: p.sold_date_raw,
-        source: p.source,
-        latitude: p.latitude,
-        longitude: p.longitude,
-        homely_url: p.homely_url,
-        source_suburb: p.source_suburb,
-        is_neighbouring: p.is_neighbouring
-      }));
-
       return {
         cache_key: entry.cache_key,
+        id: entry.id,
         suburb,
         state: state.toUpperCase(),
         postcode: entry.postcode,
         property_type: entry.property_type,
         cached_at: entry.cached_at,
-        total: sales.length,
+        total: entry.total,
         is_valid: new Date(entry.cached_at) >= cutoffDate,
-        sales
+        sales: [] // Empty - fetch via /properties/:cacheId when needed
       };
-    }));
+    });
 
-    console.log(`[Historic Sales Cache] Listed ${searches.length} cached searches`);
+    console.log(`[Historic Sales Cache] Listed ${searches.length} cached searches (limit: ${resultLimit}${searchTerm ? `, search: "${searchTerm}"` : ''})`);
 
     return res.json({
       success: true,
@@ -107,6 +104,48 @@ router.get('/all', async (req: Request, res: Response) => {
     console.error('Historic sales cache GET all error:', error);
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     return res.status(500).json({ detail: 'Failed to list cached searches: ' + errorMessage });
+  }
+});
+
+/**
+ * GET /api/historic-sales-cache/properties/:cacheId
+ * Get properties for a specific cache entry (for expanding in admin)
+ */
+router.get('/properties/:cacheId', async (req: Request, res: Response) => {
+  try {
+    const cacheId = parseInt(req.params.cacheId, 10);
+
+    if (isNaN(cacheId)) {
+      return res.status(400).json({ detail: 'Invalid cache ID' });
+    }
+
+    const props = await queryMany<HistoricProp>(
+      `SELECT TOP 50 * FROM historic_prop WHERE cache_id = @cacheId ORDER BY sold_date_raw DESC`,
+      { cacheId }
+    );
+
+    const sales = props.map(p => ({
+      id: p.prop_id,
+      address: p.address,
+      price: p.price,
+      beds: p.beds,
+      baths: p.baths,
+      cars: p.cars,
+      land_area: p.land_area,
+      property_type: p.property_type,
+      sold_date: p.sold_date,
+      source: p.source
+    }));
+
+    return res.json({
+      success: true,
+      sales,
+      total: sales.length
+    });
+  } catch (error) {
+    console.error('Historic sales cache GET properties error:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    return res.status(500).json({ detail: 'Failed to get properties: ' + errorMessage });
   }
 });
 

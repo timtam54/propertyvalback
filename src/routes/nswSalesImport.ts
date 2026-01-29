@@ -247,15 +247,32 @@ router.post('/import', upload.single('file'), async (req: Request, res: Response
           cacheId = newEntry!.id;
         }
 
-        // Insert property records
+        // Insert property records (with duplicate check)
         for (const record of suburbRecords) {
           try {
             const saleDate = parseExcelDate(record['Contract Date']) || parseExcelDate(record['Settlement Date']);
             const price = parseFloatSafe(record['Purchase Price']);
             const landArea = record['Area Unit'] === 'M' ? parseFloatSafe(record['Area']) : null;
+            const address = formatAddress(record);
+            const postcode = (record['Postcode'] || '').toString().trim();
 
             // Skip invalid records
             if (!price || price <= 0) {
+              skipped++;
+              continue;
+            }
+
+            // Check for existing record with same address, postcode, and sold_date
+            const existing = await queryOne<{ id: number }>(
+              `SELECT id FROM historic_prop
+               WHERE address = @address
+               AND sold_date_raw = @sold_date_raw
+               AND source = 'nsw-valuer-general'`,
+              { address, sold_date_raw: saleDate?.raw || null }
+            );
+
+            if (existing) {
+              // Already exists, skip (price should be same)
               skipped++;
               continue;
             }
@@ -271,7 +288,7 @@ router.post('/import', upload.single('file'), async (req: Request, res: Response
               {
                 cache_id: cacheId,
                 prop_id: uuidv4(),
-                address: formatAddress(record),
+                address: address,
                 price: price,
                 beds: null, // Not provided in NSW data
                 baths: null,
@@ -405,6 +422,53 @@ router.delete('/clear', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error('NSW Sales clear error:', error);
+    res.status(500).json({ success: false, detail: error.message });
+  }
+});
+
+// POST /api/nsw-sales/dedupe - Remove duplicates and create unique index
+router.post('/dedupe', async (req: Request, res: Response) => {
+  try {
+    // First, remove duplicates keeping the first occurrence (lowest id)
+    const dedupeResult = await execute(`
+      DELETE FROM historic_prop
+      WHERE id NOT IN (
+        SELECT MIN(id)
+        FROM historic_prop
+        WHERE source = 'nsw-valuer-general'
+        GROUP BY address, sold_date_raw
+      )
+      AND source = 'nsw-valuer-general'
+    `);
+
+    console.log(`[NSW Sales] Removed ${dedupeResult} duplicate records`);
+
+    // Try to create unique index (may already exist)
+    let indexCreated = false;
+    try {
+      await execute(`
+        CREATE UNIQUE INDEX IX_historic_prop_unique_sale
+        ON historic_prop (address, sold_date_raw, source)
+        WHERE source = 'nsw-valuer-general'
+      `);
+      indexCreated = true;
+      console.log(`[NSW Sales] Created unique index IX_historic_prop_unique_sale`);
+    } catch (indexErr: any) {
+      // Index may already exist
+      if (indexErr.message.includes('already exists')) {
+        console.log(`[NSW Sales] Unique index already exists`);
+      } else {
+        console.error(`[NSW Sales] Index creation error: ${indexErr.message}`);
+      }
+    }
+
+    res.json({
+      success: true,
+      duplicatesRemoved: dedupeResult,
+      indexCreated
+    });
+  } catch (error: any) {
+    console.error('NSW Sales dedupe error:', error);
     res.status(500).json({ success: false, detail: error.message });
   }
 });
