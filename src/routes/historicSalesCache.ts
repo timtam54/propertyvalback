@@ -361,9 +361,10 @@ router.post('/', async (req: Request, res: Response) => {
           property_type: propertyType || 'all'
         }
       );
-      // Delete old properties for this cache entry
+      // Delete old properties for this cache entry, but PRESERVE NSW Valuer General data
+      // NSW data is official government data that should not be deleted by Homely scraping
       await execute(
-        `DELETE FROM historic_prop WHERE cache_id = @cacheId`,
+        `DELETE FROM historic_prop WHERE cache_id = @cacheId AND source != 'nsw-valuer-general'`,
         { cacheId }
       );
     } else {

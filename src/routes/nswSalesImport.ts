@@ -198,63 +198,26 @@ router.post('/import', upload.single('file'), async (req: Request, res: Response
       suburbGroups.get(cacheKey)!.push(record);
     }
 
-    console.log(`[NSW Sales Import] Grouped into ${suburbGroups.size} suburb cache entries`);
+    console.log(`[NSW Sales Import] Grouped into ${suburbGroups.size} suburb groups`);
 
     let imported = 0;
     let skipped = 0;
     let errors: string[] = [];
-    const now = new Date();
 
-    // Process each suburb group
+    // Process each suburb group - NO CACHE SYSTEM
+    // NSW Valuer General data is stored directly in historic_prop with cache_id = NULL
     for (const [cacheKey, suburbRecords] of suburbGroups) {
       try {
         const parts = cacheKey.split('-');
         const suburb = parts[0];
-        const postcode = parts[2] !== 'none' ? parts[2] : null;
 
-        // Check if cache entry exists
-        let cacheEntry = await queryOne<{ id: number }>(
-          `SELECT id FROM historic_sales_cache WHERE cache_key = @cacheKey`,
-          { cacheKey }
-        );
-
-        let cacheId: number;
-
-        if (cacheEntry) {
-          cacheId = cacheEntry.id;
-          // Update cache entry timestamp
-          await execute(
-            `UPDATE historic_sales_cache SET cached_at = @cached_at WHERE id = @cacheId`,
-            { cacheId, cached_at: now }
-          );
-        } else {
-          // Insert new cache entry
-          await execute(
-            `INSERT INTO historic_sales_cache (cache_key, cached_at, postcode, property_type, sales)
-             VALUES (@cacheKey, @cached_at, @postcode, @property_type, '[]')`,
-            {
-              cacheKey,
-              cached_at: now,
-              postcode: postcode,
-              property_type: 'all'
-            }
-          );
-          // Get the new cache entry ID
-          const newEntry = await queryOne<{ id: number }>(
-            `SELECT id FROM historic_sales_cache WHERE cache_key = @cacheKey`,
-            { cacheKey }
-          );
-          cacheId = newEntry!.id;
-        }
-
-        // Insert property records (with duplicate check)
+        // Insert property records (with duplicate check on address + sold_date + source)
         for (const record of suburbRecords) {
           try {
             const saleDate = parseExcelDate(record['Contract Date']) || parseExcelDate(record['Settlement Date']);
             const price = parseFloatSafe(record['Purchase Price']);
             const landArea = record['Area Unit'] === 'M' ? parseFloatSafe(record['Area']) : null;
             const address = formatAddress(record);
-            const postcode = (record['Postcode'] || '').toString().trim();
 
             // Skip invalid records
             if (!price || price <= 0) {
@@ -262,7 +225,7 @@ router.post('/import', upload.single('file'), async (req: Request, res: Response
               continue;
             }
 
-            // Check for existing record with same address, postcode, and sold_date
+            // Check for existing record with same address and sold_date for NSW data
             const existing = await queryOne<{ id: number }>(
               `SELECT id FROM historic_prop
                WHERE address = @address
@@ -272,21 +235,21 @@ router.post('/import', upload.single('file'), async (req: Request, res: Response
             );
 
             if (existing) {
-              // Already exists, skip (price should be same)
+              // Already exists, skip
               skipped++;
               continue;
             }
 
+            // Insert without cache_id - NSW data is standalone
             await execute(
               `INSERT INTO historic_prop (
                 cache_id, prop_id, address, price, beds, baths, cars, land_area,
                 property_type, sold_date, sold_date_raw, source, source_suburb, is_neighbouring
               ) VALUES (
-                @cache_id, @prop_id, @address, @price, @beds, @baths, @cars, @land_area,
+                NULL, @prop_id, @address, @price, @beds, @baths, @cars, @land_area,
                 @property_type, @sold_date, @sold_date_raw, @source, @source_suburb, @is_neighbouring
               )`,
               {
-                cache_id: cacheId,
                 prop_id: uuidv4(),
                 address: address,
                 price: price,
@@ -409,9 +372,10 @@ router.delete('/clear', async (req: Request, res: Response) => {
     );
 
     // Also delete empty cache entries that have no properties left
+    // Note: NSW data now uses cache_id = NULL, so we need to handle that
     await execute(
       `DELETE FROM historic_sales_cache
-       WHERE id NOT IN (SELECT DISTINCT cache_id FROM historic_prop)`
+       WHERE id NOT IN (SELECT DISTINCT cache_id FROM historic_prop WHERE cache_id IS NOT NULL)`
     );
 
     console.log(`[NSW Sales] Cleared ${result} imported records from historic_prop`);
